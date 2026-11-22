@@ -4,6 +4,13 @@
 // @ts-nocheck
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+/* Round 18: post-processing pipeline (Nagi track, code-only). */
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { BokehPass } from 'three/addons/postprocessing/BokehPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import type { Project } from '../lib/projects';
 
 export type GalleryApi = {
@@ -206,6 +213,68 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       renderer.toneMappingExposure = 1.32;
       if ('outputColorSpace' in renderer) renderer.outputColorSpace = THREE.SRGBColorSpace;
       container.appendChild(renderer.domElement);
+
+      /* ================= ROUND 18: POST-PROCESSING =================
+         The r17 audit's gap #2: the gallery rendered raw (only ACES +
+         antialias), everything sharp front to back, no focus
+         hierarchy — Nagi reads cinematic because the statue is in
+         focus, the background falls off softly, and the grade is
+         warm with a gentle vignette. Pipeline: RenderPass -> bloom
+         (high threshold, only true highlights) -> Bokeh DOF (gated,
+         see animate) -> one cheap grade pass (warm grade + vignette
+         + grain) -> OutputPass (tone mapping + sRGB, must be last;
+         without it the composer would skip the renderer's ACES).
+         MSAA 4x on the composer targets: the renderer's antialias
+         only applies to the default framebuffer, so without this
+         every edge would go jaggy the moment the composer is used.
+         The samples are set before the first render, when the GL
+         renderbuffers are allocated. */
+      var GradeShader = {
+        uniforms: {
+          tDiffuse: { value: null },
+          uTime: { value: 0 },
+          uVig: { value: 0.22 },
+          uGrain: { value: 0.018 }
+        },
+        vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+        fragmentShader: [
+          'uniform sampler2D tDiffuse; uniform float uTime; uniform float uVig; uniform float uGrain; varying vec2 vUv;',
+          'float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }',
+          'void main(){',
+          '  vec4 c = texture2D(tDiffuse, vUv);',
+          '  vec3 col = c.rgb;',
+          '  col *= vec3(1.02, 1.0, 0.965);',
+          '  col += vec3(0.008, 0.005, 0.002);',
+          '  vec2 q = vUv - 0.5;',
+          '  float vig = 1.0 - uVig * dot(q, q) * 2.4;',
+          '  col *= clamp(vig, 0.0, 1.0);',
+          '  float g = hash(vUv * vec2(1920.0, 1080.0) + fract(uTime) * 43.0) - 0.5;',
+          '  col += g * uGrain;',
+          '  gl_FragColor = vec4(col, c.a);',
+          '}'
+        ].join('\n')
+      };
+      var composer = new EffectComposer(renderer);
+      composer.renderTarget1.samples = 4;
+      composer.renderTarget2.samples = 4;
+      composer.addPass(new RenderPass(scene, camera));
+      /* Bloom: threshold 0.9 / strength 0.3 / radius 0.5 — in linear
+         HDR only the skylight, gold glints and crystal speculars
+         clear 0.9, so the palette is never washed; strength halves
+         while the crystal is on screen (see animate). */
+      var bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.3, 0.5, 0.9);
+      composer.addPass(bloomPass);
+      /* DOF: BokehPass. focus is re-aimed every frame at the
+         camera-to-target distance. aperture 0.0015 / maxblur 0.006:
+         the shader blurs by clamp((focus - depth) * aperture), so
+         with our metre-scale depths the back wall (~4 m behind the
+         statue) just reaches full blur while the statue itself
+         stays sharp. Gated off while the crystal is on screen. */
+      var bokehPass = new BokehPass(scene, camera, { focus: 4.6, aperture: 0.0015, maxblur: 0.006 });
+      composer.addPass(bokehPass);
+      var gradePass = new ShaderPass(GradeShader);
+      composer.addPass(gradePass);
+      composer.addPass(new OutputPass());
 
       var scene = new THREE.Scene();
       scene.background = new THREE.Color(0xefe9db);
@@ -1176,6 +1245,17 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       var lastInteract = performance.now();
       var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
       var mouseX = 0, mouseY = 0, parX = 0, parY = 0;
+      /* Round 18: camera inertia + dolly/zoom. Velocities are rad/s,
+         smoothed in the drag handler and decayed in animate after
+         release. dolly: metres the room camera has slid toward the
+         sculpture (0..1.7 — stops 2.4 m short of the plinth).
+         hallFov: wheel zoom in the hall, FOV degrees (48..68).
+         fovCur: the lerped live FOV (58 base, 60.5 mid-flight). */
+      var yawVel = 0, pitchVel = 0, roomYawVel = 0, roomPitchVel = 0;
+      var lastMoveT = 0;
+      var dolly = 0, tDolly = 0;
+      var hallFov = 58, tHallFov = 58;
+      var fovCur = 58;
 
       function notifyLocation(loc){ if (opts && opts.onLocation) opts.onLocation(loc); }
       function notifyTour(t){ if (opts && opts.onTourChange) opts.onTourChange(t); }
@@ -1186,6 +1266,10 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
          room-to-room flights so the camera passes through the hall centre
          and never clips a room wall. */
       function flyTo(pos, tgt, dur, done, midP, midT){
+        /* Round 18: a flight never inherits a fling — a fast flick
+           that starts a room change used to keep gliding after
+           landing and fight the canonical framing. */
+        yawVel = 0; pitchVel = 0; roomYawVel = 0; roomPitchVel = 0;
         transit = { t:0, dur:dur, startAt: performance.now(),
                     fromP:camPos.clone(), fromT:camTarget.clone(),
                     toP:pos.clone(), toT:tgt.clone(), done:done,
@@ -1224,6 +1308,10 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
              landing). Reset the live values too, plus the parallax
              offsets, so the re-centre is instant and canonical. */
           tRoomYaw = 0; tRoomPitch = 0; roomYaw = 0; roomPitch = 0; parX = 0; parY = 0;
+          /* Round 18: re-centring also re-dollies — a zoomed-in view
+             must not survive a dot click that promises the canonical
+             framing. */
+          dolly = 0; tDolly = 0; roomYawVel = 0; roomPitchVel = 0;
           return true;
         }
         /* Round 10: a flight already in progress no longer swallows the
@@ -1269,6 +1357,8 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         var arrived = function(){
           mode = 'room'; currentRoom = id; flightTarget = null;
           tRoomYaw = 0; tRoomPitch = 0; roomYaw = 0; roomPitch = 0;
+          /* Round 18: every landing is canonical — dolly included. */
+          dolly = 0; tDolly = 0; roomYawVel = 0; roomPitchVel = 0;
           /* Round 15: also clear the mouse-parallax offsets — they
              lerp back toward wherever the pointer last rested, so a
              pointer parked at the bottom of the screen tilted every
@@ -1349,6 +1439,7 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         });
         var nxt = PROJECTS[(best + dir + PROJECTS.length) % PROJECTS.length];
         targetYaw = nxt.angle;
+        yawVel = 0; pitchVel = 0;
         lastInteract = performance.now();
       }
       function leaveRoom(fromTour){
@@ -1358,7 +1449,7 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
            transit (its done never fires), so aborting mid-flight is safe. */
         /* Round 13: clicking the Aula dot while already in the hall
            re-centres the view after a drag-look. */
-        if (mode === 'hall'){ yaw = targetYaw = 0.12; pitch = targetPitch = -0.06; return; }
+        if (mode === 'hall'){ yaw = targetYaw = 0.12; pitch = targetPitch = -0.06; yawVel = 0; pitchVel = 0; return; }
         if (mode !== 'room' && mode !== 'transit') return;
         /* Return to the canonical hall framing: yaw/pitch are whatever the
            user left them at before entering (e.g. pitched up at the
@@ -1521,6 +1612,10 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         if (tour) stopTour('pointer');
         dragging = true; moved = 0; lastX = e.clientX; lastY = e.clientY;
         downX = e.clientX; downY = e.clientY; downT = performance.now(); downYaw = targetYaw;
+        /* Round 18: a fresh drag takes over — any glide is cancelled
+           and the velocity clock restarts here. */
+        lastMoveT = performance.now();
+        yawVel = 0; pitchVel = 0; roomYawVel = 0; roomPitchVel = 0;
         if (tip) tip.classList.remove('show');
         el.setPointerCapture(e.pointerId);
       });
@@ -1530,12 +1625,30 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
           moved += Math.abs(dx) + Math.abs(dy);
           lastX = e.clientX; lastY = e.clientY;
           lastInteract = performance.now();
+          /* Round 18: track fling velocity — on release the camera
+             glides on with decay (see animate). Smoothed 65/35 so
+             one jittery move event cannot launch the view; capped
+             so a wild fling cannot spin the room. */
+          var nowT = performance.now();
+          var dtMs = Math.max(1, nowT - lastMoveT);
+          lastMoveT = nowT;
           if (mode === 'hall'){
             targetYaw -= dx * 0.0042;
             targetPitch = THREE.MathUtils.clamp(targetPitch - dy * 0.0028, -0.32, 1.0);
+            yawVel = THREE.MathUtils.clamp(0.65 * yawVel + 0.35 * (-dx * 0.0042) / (dtMs / 1000), -3.5, 3.5);
+            pitchVel = THREE.MathUtils.clamp(0.65 * pitchVel + 0.35 * (-dy * 0.0028) / (dtMs / 1000), -2, 2);
           } else if (mode === 'room'){
-            tRoomYaw = THREE.MathUtils.clamp(tRoomYaw - dx * 0.003, -0.55, 0.55);
-            tRoomPitch = THREE.MathUtils.clamp(tRoomPitch - dy * 0.002, -0.16, 0.2);
+            /* Round 18: yaw clamp ±0.55 -> ±0.95. The camera never
+               moves — only the look direction rotates — so the view
+               centre at 0.95 lands on the side wall inside the room
+               (hits x=±5.5 at z≈+0.2, inside the side painting's
+               z-range), and the frustum edge past it looks out the
+               open front into the hall, never into void. Pitch
+               widens a touch too (-0.16..0.2 -> -0.2..0.25). */
+            tRoomYaw = THREE.MathUtils.clamp(tRoomYaw - dx * 0.003, -0.95, 0.95);
+            tRoomPitch = THREE.MathUtils.clamp(tRoomPitch - dy * 0.002, -0.2, 0.25);
+            roomYawVel = THREE.MathUtils.clamp(0.65 * roomYawVel + 0.35 * (-dx * 0.003) / (dtMs / 1000), -3.5, 3.5);
+            roomPitchVel = THREE.MathUtils.clamp(0.65 * roomPitchVel + 0.35 * (-dy * 0.002) / (dtMs / 1000), -2, 2);
           }
         } else {
           /* hover: cursor + tooltip + glow on the hovered group */
@@ -1550,6 +1663,10 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       el.addEventListener('pointerup', function(e){
         var wasDrag = moved > 7;
         dragging = false;
+        /* Round 18: the release moment restarts the idle clock, so
+           the hall's slow auto-pan cannot kick in while the fling
+           glide is still settling. */
+        if (wasDrag) lastInteract = performance.now();
         if (wasDrag){
           /* Round 12: a swipe is a deliberate fast flick — quick,
              long, clearly horizontal. Thresholds relaxed from round
@@ -1606,6 +1723,24 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       el.addEventListener('pointercancel', function(){ dragging = false; });
       el.addEventListener('pointerleave', function(){ hoverInside = false; updateHover(null, 0, 0); });
 
+      /* Round 18: wheel dolly/zoom. Room: the camera slides toward
+         the sculpture along its view axis (0..1.7 m — stops 2.4 m
+         short of the plinth, never through it). Hall: the camera
+         cannot move without risking the knot, so the wheel zooms
+         the lens instead (FOV 48..68). Ignored during flights and
+         while a sheet covers the canvas. */
+      el.addEventListener('wheel', function(e){
+        if (mode === 'transit') return;
+        if (menuSheet.classList.contains('open') || detailSheet.classList.contains('open')) return;
+        e.preventDefault();
+        lastInteract = performance.now();
+        if (mode === 'room'){
+          tDolly = THREE.MathUtils.clamp(tDolly - e.deltaY * 0.0012, 0, 1.7);
+        } else if (mode === 'hall'){
+          tHallFov = THREE.MathUtils.clamp(tHallFov + e.deltaY * 0.008, 48, 68);
+        }
+      }, { passive: false });
+
       /* ================= LOOP ================= */
       var clock = new THREE.Clock();
       var rafId = 0;
@@ -1617,18 +1752,12 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
           var dt = Math.min(clock.getDelta(), 0.05);
           var t = clock.elapsedTime;
 
-          knot.rotation.y += dt * (reduced ? 0.05 : 0.25);
-          knot.rotation.x = Math.sin(t * 0.4) * 0.15;
+          /* Round 18: the statues stand still — Nagi's do. The hall
+             knot no longer turns or wobbles and the sculptures no
+             longer spin or bob (the r17 crystal hit-proxy is a child
+             of the gem group, so it stays put with it). Only the
+             dust keeps drifting, like Nagi's. */
           dust.rotation.y += dt * 0.012;
-
-          Object.keys(rooms).forEach(function(id){
-            var s = rooms[id].sculpture;
-            if (s.userData.spin){
-              s.userData.spin.rotation.y += dt * 0.7;
-              s.userData.spin.position.y = 0.85 + Math.sin(t * 1.1) * 0.05;
-              if (s.userData.ring) s.userData.ring.position.y = s.userData.spin.position.y;
-            }
-          });
 
           if (mode === 'transit' && transit){
             /* Round 10: flight progress runs on wall-clock time, not on
@@ -1659,7 +1788,19 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
             camPos.y += Math.sin(e * Math.PI) * 0.25;
             if (transit.t >= 1){ var done = transit.done; transit = null; try { done && done(); } catch (arrErr){ tourEvent('arrived-error:' + (arrErr && arrErr.message ? arrErr.message : 'err')); } }
           } else if (mode === 'hall'){
-            if (!dragging && !reduced && performance.now() - lastInteract > 5000) targetYaw += dt * 0.03;
+            /* Round 18: fling inertia — after release the view glides
+               on with exponential decay (rate 2.2/s, ~1.5 s to
+               settle) instead of stopping dead. The idle slow-pan
+               waits until the glide has settled. */
+            if (!dragging){
+              targetYaw += yawVel * dt;
+              targetPitch = THREE.MathUtils.clamp(targetPitch + pitchVel * dt, -0.32, 1.0);
+              var decH = Math.exp(-dt * 2.2);
+              yawVel *= decH; pitchVel *= decH;
+              if (Math.abs(yawVel) < 0.005) yawVel = 0;
+              if (Math.abs(pitchVel) < 0.005) pitchVel = 0;
+            }
+            if (!dragging && !reduced && Math.abs(yawVel) < 0.01 && performance.now() - lastInteract > 5000) targetYaw += dt * 0.03;
             yaw += (targetYaw - yaw) * Math.min(1, dt * 5);
             pitch += (targetPitch - pitch) * Math.min(1, dt * 5);
             var v = hallView();
@@ -1668,6 +1809,19 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
             updateHallBar();
           } else if (mode === 'room' && currentRoom){
             var r = rooms[currentRoom];
+            /* Round 18: same fling inertia as the hall, on the
+               widened ±0.95 yaw clamp. */
+            if (!dragging){
+              tRoomYaw = THREE.MathUtils.clamp(tRoomYaw + roomYawVel * dt, -0.95, 0.95);
+              tRoomPitch = THREE.MathUtils.clamp(tRoomPitch + roomPitchVel * dt, -0.2, 0.25);
+              var decR = Math.exp(-dt * 2.2);
+              roomYawVel *= decR; roomPitchVel *= decR;
+              if (Math.abs(roomYawVel) < 0.005) roomYawVel = 0;
+              if (Math.abs(roomPitchVel) < 0.005) roomPitchVel = 0;
+            }
+            /* Round 18: wheel dolly — the camera slides toward the
+               sculpture along its own view axis. */
+            dolly += (tDolly - dolly) * Math.min(1, dt * 6);
             roomYaw += (tRoomYaw - roomYaw) * Math.min(1, dt * 5);
             roomPitch += (tRoomPitch - roomPitch) * Math.min(1, dt * 5);
             if (!reduced){
@@ -1676,15 +1830,23 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
               parX += ((mouseX * 0.14) - parX) * Math.min(1, dt * 3);
               parY += ((mouseY * 0.09) - parY) * Math.min(1, dt * 3);
             }
-            camPos.copy(r.camPos);
+            /* Round 18: the dolly base is the canonical camPos moved
+               toward the canonical target — the target is pushed the
+               same amount, so the framing is preserved, just closer. */
+            var rBase = r.camPos.clone();
+            if (dolly > 0.001){
+              var dDir = r.camTarget.clone().sub(r.camPos).normalize();
+              rBase.addScaledVector(dDir, dolly);
+            }
+            camPos.copy(rBase);
             if (!reduced) camPos.y += Math.sin(t * 0.5) * 0.02;
             var off = r.camTarget.clone().sub(r.camPos);
             var ang = Math.atan2(off.x, off.z) + roomYaw;
             var len = Math.sqrt(off.x*off.x + off.z*off.z);
             camTarget.set(
-              r.camPos.x + Math.sin(ang) * len + parX,
+              rBase.x + Math.sin(ang) * len + parX,
               r.camTarget.y + roomPitch * 3 + parY,
-              r.camPos.z + Math.cos(ang) * len
+              rBase.z + Math.cos(ang) * len
             );
           }
           /* Round 12: tour dwell watchdog, armed AND checked here
@@ -1712,6 +1874,16 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
           }
           camera.position.copy(camPos);
           camera.lookAt(camTarget);
+          /* Round 18: FOV — a slight widen mid-flight reads as
+             speed; the hall wheel-zoom lerps back to 58 in rooms
+             and on flights. */
+          var fovT = 58;
+          if (mode === 'transit') fovT = 60.5;
+          else if (mode === 'hall'){ hallFov += (tHallFov - hallFov) * Math.min(1, dt * 6); fovT = hallFov; }
+          if (Math.abs(fovT - fovCur) > 0.01){
+            fovCur += (fovT - fovCur) * Math.min(1, dt * 5);
+            camera.fov = fovCur; camera.updateProjectionMatrix();
+          }
           /* Round 9: re-check what sits under the pointer every frame.
              Without this, the tooltip/glow froze on the last target the
              pointer moved over while the camera (tour, flight, drag-look)
@@ -1739,7 +1911,20 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
             gemTransmissionOn = gemOn;
             gemMats.forEach(function(m){ m.transmission = gemOn ? 1 : 0; m.needsUpdate = true; });
           }
-          renderer.render(scene, camera);
+          /* Round 18: post-processing. The DOF is gated like the
+             transmission pass — when the crystal is on screen the
+             transmission pass already costs a second full render,
+             so the Bokeh depth render is skipped there and the
+             bloom is halved; the two heavy passes never run
+             together. Focus tracks the camera-to-target distance
+             every frame, so the statue stays sharp and the wall
+             behind it falls off. */
+          var bokehOn = !gemOn && !reduced;
+          bokehPass.enabled = bokehOn;
+          if (bokehOn) bokehPass.uniforms['focus'].value = camera.position.distanceTo(camTarget);
+          bloomPass.strength = gemOn ? 0.15 : 0.3;
+          gradePass.uniforms['uTime'].value = t;
+          composer.render();
         } catch(err){
           errBox.style.display = 'block';
           errBox.textContent = 'Galeri 3D tersendat: ' + err.message + '. Daftar proyek tetap bisa dibuka lewat tombol Menu.';
@@ -1759,6 +1944,7 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         camera.aspect = window.innerWidth / window.innerHeight;
         camera.updateProjectionMatrix();
         renderer.setSize(window.innerWidth, window.innerHeight);
+        composer.setSize(window.innerWidth, window.innerHeight);
       });
 
         return {
@@ -1778,6 +1964,7 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
             if (titleFadeTimer) clearTimeout(titleFadeTimer);
             disposed = true;
             if (rafId) cancelAnimationFrame(rafId);
+            try { composer.dispose(); } catch (e) { /* noop */ }
             try { renderer.dispose(); } catch (e) { /* noop */ }
             if (renderer.domElement && renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
           }
@@ -1790,8 +1977,8 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
   /* Build marker (round 13): lets a visual check confirm which build is
      actually loaded, so a stale-cache check can never again be mistaken
      for a failed fix. */
-  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r17';
+  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r18';
   var sceneEl = document.getElementById('scene');
-  if (sceneEl) sceneEl.dataset.build = 'r17';
+  if (sceneEl) sceneEl.dataset.build = 'r18';
   return gl;
 }
