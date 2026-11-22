@@ -191,7 +191,14 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       /* ================= RENDERER / SCENE ================= */
       var container = document.getElementById('scene');
       var renderer = new THREE.WebGLRenderer({ antialias:true });
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      /* Round 15: pixelRatio cap 2 -> 1.5. Three r170 has NO
+         transmissionResolutionScale — the transmission pass re-renders
+         the whole opaque scene into a full-viewport render target with
+         4x MSAA + mipmaps, so the crystal costs a second full render
+         every frame. Capping the ratio cuts the pixel load of BOTH
+         passes ~1.8x; the scene is small enough that 1.5 is visually
+         near-identical on ordinary displays. */
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
       renderer.setSize(window.innerWidth, window.innerHeight);
       renderer.shadowMap.enabled = true;
       renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -219,9 +226,20 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       var hemi = new THREE.HemisphereLight(0xfff6e6, 0xcfc2ab, 1.05);
       scene.add(hemi);
       var sun = new THREE.DirectionalLight(0xfff1d6, 1.6);
-      sun.position.set(4, 12, 2);
+      /* Round 15: near-overhead sun (was 4,12,2). At 69 deg elevation
+         the lattice shadow landed 1.8 units off-centre and, seen from
+         the low hall camera, the foreshortened 0.6 grid read as a
+         diagonal band instead of squares. Near-vertical light drops
+         the grid centred under the oculus (~0.7 offset) with almost
+         no shear. Rooms sit outside the +/-14 shadow frustum, so
+         their lighting is unaffected. */
+      sun.position.set(1.5, 12, 0.75);
       sun.castShadow = true;
-      sun.shadow.mapSize.set(2048, 2048);
+      /* Round 15: 2048 -> 1024. The transmission pass is the frame
+         cost now; the shadow map only needs to resolve 0.14-wide
+         lattice bars (~5 texels at 1024 over 28 units) and the big
+         soft shapes, which PCFSoft hides. */
+      sun.shadow.mapSize.set(1024, 1024);
       sun.shadow.camera.left = -14; sun.shadow.camera.right = 14;
       sun.shadow.camera.top = 14; sun.shadow.camera.bottom = -14;
       sun.shadow.camera.far = 40;
@@ -600,7 +618,11 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
            while the ring sat on the old object. There is no
            position lerp anywhere in the code — the ring snaps.
            (Sizing stays round 12: single-mesh Box3, maxDim x 1.35,
-           capped 6.5, opacity 0.5.) */
+           capped 6.5, opacity 0.5. Round 15: the 2.0 minimum dwarfed
+           small meshes — the 0.84-unit crystal got a 2.0-unit ring,
+           ~440 px on screen, so the halo floated between the painting
+           and the crystal instead of hugging one object. Minimum
+           1.1 keeps the band just outside the silhouette.) */
         if (hit && hoverObj && hoverObj !== glowObj){
           glowObj = hoverObj;
           var box = new THREE.Box3().expandByObject(hoverObj);
@@ -608,7 +630,7 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
           var s = box.getSize(new THREE.Vector3());
           var m = Math.max(s.x, s.y, s.z);
           glowSprite.position.copy(c);
-          glowSprite.scale.setScalar(Math.min(6.5, Math.max(2.0, m * 1.35)));
+          glowSprite.scale.setScalar(Math.min(6.5, Math.max(1.1, m * 1.35)));
           glowSprite.material.opacity = 0.5;
         }
         if (tip){
@@ -653,16 +675,20 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       /* Round 14: skylight grille (gobo) — a lattice of thin bars just
          under the oculus. From below it reads as the skylight's grille;
          the sun shining through it throws a geometric lattice shadow
-         across the hall floor, the Nagi-style daylight. Bars span the
-         oculus (r 3.1); sun at (4,12,2) throws the shadow ~1.8 units
-         toward -x/-z, landing around the centre plinth. */
+         across the hall floor, the Nagi-style daylight.
+         Round 15: 9x9 at 0.6 spacing, 0.09 bars, was too fine to read
+         on the floor from the low hall camera (foreshortened into a
+         diagonal band) and the slanted sun threw it off-centre. Now
+         7x7 at 0.75 spacing with 0.14 bars, under the near-overhead
+         sun, so the floor shadow reads as neat squares centred on
+         the plinth. */
       var lattice = new THREE.Group();
       var latticeMat = new THREE.MeshStandardMaterial({ color:0x6d4f30, roughness:.6, metalness:.3 });
-      for (var li = -4; li <= 4; li++){
-        var lbx = new THREE.Mesh(new THREE.BoxGeometry(6.0, 0.05, 0.09), latticeMat);
-        lbx.position.set(0, 0, li*0.6); lbx.castShadow = true; lattice.add(lbx);
-        var lbz = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.05, 6.0), latticeMat);
-        lbz.position.set(li*0.6, 0, 0); lbz.castShadow = true; lattice.add(lbz);
+      for (var li = -3; li <= 3; li++){
+        var lbx = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.05, 0.14), latticeMat);
+        lbx.position.set(0, 0, li*0.75); lbx.castShadow = true; lattice.add(lbx);
+        var lbz = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.05, 4.6), latticeMat);
+        lbz.position.set(li*0.75, 0, 0); lbz.castShadow = true; lattice.add(lbz);
       }
       lattice.position.y = HALL_H + 0.12;
       hall.add(lattice);
@@ -836,13 +862,32 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
              ior / thickness over the RoomEnvironment so it refracts and
              glints instead of reading as lit plastic. It floats, spins
              and bobs (animate loop drives userData.spin/.ring, as before).
-             Palette: emerald + profiled gold ring + dark disc accent. */
+             Palette: emerald + profiled gold ring + dark disc accent.
+             Round 15 — why r14 still read as opaque green stone
+             (diagnosed against the installed three r170 shaders):
+             the transmitted light is diffuseColor x Beer's-law
+             attenuation, and r14 stacked three dark factors — color
+             0x18a87c, attenuationColor 0x0a7a58, attenuationDistance
+             0.6 with thickness 0.9 — which multiplies out to ~0-3%
+             transmitted light, i.e. the crystal transmitted almost
+             nothing and only its diffuse surface showed. And the
+             envMapIntensity 1.2 never applied: in r170 setProgram
+             overwrites the envMapIntensity uniform with
+             scene.environmentIntensity (0.35) every frame for
+             materials using scene.environment, so the glints were
+             dimmed to a third. Fix: pale diffuse color, light
+             attenuation over a long distance, thin volume, ior 1.5
+             (glass, not 1.8 mirror), roughness 0.03, and envMap set
+             explicitly on the material (same PMREM texture) so the
+             scene-intensity override is skipped and the material's
+             own envMapIntensity is honoured. Transmitted light now
+             ~40-80% per channel instead of ~0-3%. */
           var gemMat = new THREE.MeshPhysicalMaterial({
-            color:0x18a87c, roughness:.06, metalness:0,
-            transmission:.9, thickness:.9, ior:1.8,
-            clearcoat:1, clearcoatRoughness:.1,
-            attenuationColor: new THREE.Color(0x0a7a58), attenuationDistance:.6,
-            flatShading:true, envMapIntensity:1.2 });
+            color:0xe8f7ef, roughness:.03, metalness:0,
+            transmission:1, thickness:.45, ior:1.5,
+            clearcoat:1, clearcoatRoughness:.05,
+            attenuationColor: new THREE.Color(0x2fae7d), attenuationDistance:2.2,
+            flatShading:true, envMap: scene.environment, envMapIntensity:2.2 });
           var gemGrp = new THREE.Group();
           var pavilion = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.03, 0.46, 8, 1), gemMat);
           pavilion.position.y = -0.23; pavilion.castShadow = true; gemGrp.add(pavilion);
@@ -1067,8 +1112,14 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         if (mode === 'room' && currentRoom === id){
           /* Round 13: clicking the current room's dot re-centres the
              view after a drag-look — the old early return left a
-             dragged yaw in place until a reload. */
-          tRoomYaw = 0; tRoomPitch = 0;
+             dragged yaw in place until a reload.
+             Round 15: it only reset the TARGETS — roomYaw/roomPitch
+             kept lerping from the dragged values for ~1 s, so a
+             same-room dot click after a downward drag left the camera
+             pitched at the floor (the r14 check's low Gemfund
+             landing). Reset the live values too, plus the parallax
+             offsets, so the re-centre is instant and canonical. */
+          tRoomYaw = 0; tRoomPitch = 0; roomYaw = 0; roomPitch = 0; parX = 0; parY = 0;
           return true;
         }
         /* Round 10: a flight already in progress no longer swallows the
@@ -1114,6 +1165,11 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         var arrived = function(){
           mode = 'room'; currentRoom = id; flightTarget = null;
           tRoomYaw = 0; tRoomPitch = 0; roomYaw = 0; roomPitch = 0;
+          /* Round 15: also clear the mouse-parallax offsets — they
+             lerp back toward wherever the pointer last rested, so a
+             pointer parked at the bottom of the screen tilted every
+             landing a touch downward. */
+          parX = 0; parY = 0;
           /* Round 13: the UI already flipped to this room when the
              flight started (see showRoomUI above) — arrival only
              re-asserts the location. It must NOT re-show the title:
@@ -1613,8 +1669,8 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
   /* Build marker (round 13): lets a visual check confirm which build is
      actually loaded, so a stale-cache check can never again be mistaken
      for a failed fix. */
-  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r14';
+  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r15';
   var sceneEl = document.getElementById('scene');
-  if (sceneEl) sceneEl.dataset.build = 'r14';
+  if (sceneEl) sceneEl.dataset.build = 'r15';
   return gl;
 }
