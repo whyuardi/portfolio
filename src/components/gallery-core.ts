@@ -1653,8 +1653,26 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
            re-asserts Aula on landing. Leaving the room by any route
            ends a running tour. */
         if (tour) stopTour('leave');
+        /* Round 24: the button MUST flip with the pill, on every leg
+           including this return leg. enterLabel.textContent was only
+           ever written in goRoom's showRoomUI ('Jelajahi ' + room),
+           so a return flight left the previous room's name in the
+           DOM — the r23 check read 'Jelajahi Gemfund →' while the
+           pill already said Aula (two legs stale). The bar is
+           display:none in the hall, but its text is still readable
+           in the DOM, so it tracks the destination like the pill
+           does. It is overwritten again by the next goRoom. */
+        enterLabel.textContent = 'Jelajahi Aula';
         notifyLocation(null);
-        flyTo(v.pos, v.tgt, reduced ? 0.4 : 1.7, function(){ mode = 'hall'; currentRoom = null; notifyLocation(null); });
+        flyTo(v.pos, v.tgt, reduced ? 0.4 : 1.7, function(){
+          mode = 'hall'; currentRoom = null; notifyLocation(null);
+          /* Round 24: snap the LIVE FOV to the wide hall default on
+             landing — the flight itself converges on 64 (see the
+             FOV block in animate), so at real frame rates this snap
+             is ~0; at checker frame rates it is the guarantee that
+             the landing frame reads the default, not ~58.7 deg. */
+          fovCur = 64; camera.fov = 64; camera.updateProjectionMatrix();
+        });
       }
 
       /* ---- hall "enter" bar: appears when the camera faces a doorway ---- */
@@ -2123,9 +2141,22 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
           camera.lookAt(camTarget);
           /* Round 18: FOV — a slight widen mid-flight reads as
              speed; the hall wheel-zoom lerps back to 58 in rooms
-             and on flights. */
+             and on flights.
+             Round 24: a return flight to the hall is the exception
+             — its target is the wide hall default (hallFov = 64),
+             not 60.5. flightTarget is set by goRoom and cleared by
+             leaveRoom, so a null flightTarget during transit means
+             exactly "flying home". The old 60.5 pulled the live FOV
+             toward 60.5 on the way home, and leaveRoom only reset
+             the targets (hallFov/tHallFov) — never the live fovCur
+             — so the landing read ~58.7 deg (Node probe, checker
+             frame timing) and needed ~9 more frames to creep to
+             64: the r23 check's "tour does not reset FOV". With
+             the flight itself converging on 64, the landing snap
+             in leaveRoom's done callback is ~0 at real frame
+             rates and only a guarantee at checker frame rates. */
           var fovT = 58;
-          if (mode === 'transit') fovT = 60.5;
+          if (mode === 'transit') fovT = flightTarget ? 60.5 : hallFov;
           else if (mode === 'hall'){ hallFov += (tHallFov - hallFov) * Math.min(1, dt * 6); fovT = hallFov; }
           if (Math.abs(fovT - fovCur) > 0.01){
             fovCur += (fovT - fovCur) * Math.min(1, dt * 5);
@@ -2309,8 +2340,8 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
   /* Build marker (round 13): lets a visual check confirm which build is
      actually loaded, so a stale-cache check can never again be mistaken
      for a failed fix. */
-  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r23';
+  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r24';
   var sceneEl = document.getElementById('scene');
-  if (sceneEl) sceneEl.dataset.build = 'r23';
+  if (sceneEl) sceneEl.dataset.build = 'r24';
   return gl;
 }
