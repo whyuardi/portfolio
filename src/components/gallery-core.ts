@@ -399,13 +399,19 @@ export function startGallery(projects: Project[]): GalleryApi {
          check found the wide halo no longer read clearly from the default
          view, only the thin baseRing band. The centre stays hidden under
          the plinth (base radius 0.95), so the visible ring is a soft
-         gradient, not a black blob. */
+         gradient, not a black blob.
+         Round 8: the round 7 alpha raise did NOT read visually — from the
+         default view only a thin band plus a fast-fading darkening showed,
+         nowhere near round 5's wide clear halo. So this round goes BOLD:
+         radius 2.6 -> 3.6 AND a much slower fade (0.78 held to 45% of
+         the radius, 0.60 at 70%, 0.32 at 90%), so the dark area stays
+         wide and clearly readable from the far/high default camera. */
       var contactTexStrong = (function(){
         var c = document.createElement('canvas'); c.width = c.height = 256;
         var g = c.getContext('2d');
         var rg = g.createRadialGradient(128, 128, 4, 128, 128, 128);
-        rg.addColorStop(0, 'rgba(24,16,8,0.80)'); rg.addColorStop(0.35, 'rgba(24,16,8,0.70)');
-        rg.addColorStop(0.65, 'rgba(24,16,8,0.52)'); rg.addColorStop(0.85, 'rgba(24,16,8,0.28)');
+        rg.addColorStop(0, 'rgba(24,16,8,0.82)'); rg.addColorStop(0.45, 'rgba(24,16,8,0.78)');
+        rg.addColorStop(0.7, 'rgba(24,16,8,0.60)'); rg.addColorStop(0.9, 'rgba(24,16,8,0.32)');
         rg.addColorStop(1, 'rgba(24,16,8,0)');
         g.fillStyle = rg; g.fillRect(0, 0, 256, 256);
         return new THREE.CanvasTexture(c);
@@ -413,12 +419,17 @@ export function startGallery(projects: Project[]): GalleryApi {
       /* wide faint halo: a second, much larger disc so the plinth reads as
          grounded from the low default camera, where a single tight disc
          foreshortens to a thin band. Round 7: alphas raised 0.16->0.26 /
-         0.10->0.17 so the halo reads from the default view again. */
+         0.10->0.17 so the halo reads from the default view again.
+         Round 8: radius 3.6 -> 5.0 and a slower fade (0.30 held to half
+         the radius, 0.20 at 75%) — the halo must read as a wide dark
+         area around the plinth from the far/high default camera, like
+         round 5, not a faint whisper that vanishes at distance. */
       var contactTexHalo = (function(){
         var c = document.createElement('canvas'); c.width = c.height = 256;
         var g = c.getContext('2d');
         var rg = g.createRadialGradient(128, 128, 4, 128, 128, 128);
-        rg.addColorStop(0, 'rgba(24,16,8,0.26)'); rg.addColorStop(0.7, 'rgba(24,16,8,0.17)');
+        rg.addColorStop(0, 'rgba(24,16,8,0.34)'); rg.addColorStop(0.5, 'rgba(24,16,8,0.30)');
+        rg.addColorStop(0.75, 'rgba(24,16,8,0.20)');
         rg.addColorStop(1, 'rgba(24,16,8,0)');
         g.fillStyle = rg; g.fillRect(0, 0, 256, 256);
         return new THREE.CanvasTexture(c);
@@ -494,8 +505,8 @@ export function startGallery(projects: Project[]): GalleryApi {
       var plinth = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.95, 0.5, 40), MAT.stone);
       plinth.position.y = 0.25; plinth.castShadow = plinth.receiveShadow = true;
       hall.add(plinth);
-      contactShadow(0, 0.012, 0, 2.6, hall, contactTexStrong);
-      contactShadow(0, 0.010, 0, 3.6, hall, contactTexHalo);
+      contactShadow(0, 0.012, 0, 3.6, hall, contactTexStrong);
+      contactShadow(0, 0.010, 0, 5.0, hall, contactTexHalo);
       /* base ring: a soft dark band hugging the plinth foot. The flat discs
          read well from the high default camera, but from a low/close camera
          they foreshorten away and hide behind the plinth's widening base —
