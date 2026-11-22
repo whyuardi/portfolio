@@ -1742,6 +1742,18 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       /* ---- hall "enter" bar: appears when the camera faces a doorway ---- */
       var hallBest = null;
       function hideHallBar(){
+        /* Round 26: hiding the bar MUST forget the tracked doorway.
+           Before this, hideHallBar only removed the 'show' class and
+           hallBest stayed stale ('gemfund', from load) — so after a
+           tour or a manual return, updateHallBar's change gate
+           (hallBest.id !== best.id) never fired for the doorway the
+           camera was already facing, and the "Masuk — Gemfund" bar
+           that shows on load never came back. The #actionBar
+           ("Jelajahi …") is a different bar: it is a room bar,
+           hidden in the hall on load AND after a return, by design —
+           its absence post-tour is not a bug, and 'Jelajahi Aula'
+           would be a nonsense label (Aula is not a project). */
+        hallBest = null;
         if (hallBar) hallBar.classList.remove('show');
         if (mode === 'hall') hint.classList.remove('hide');
       }
@@ -2404,8 +2416,8 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
   /* Build marker (round 13): lets a visual check confirm which build is
      actually loaded, so a stale-cache check can never again be mistaken
      for a failed fix. */
-  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r25';
+  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r26';
   var sceneEl = document.getElementById('scene');
-  if (sceneEl) sceneEl.dataset.build = 'r25';
+  if (sceneEl) sceneEl.dataset.build = 'r26';
   return gl;
 }
