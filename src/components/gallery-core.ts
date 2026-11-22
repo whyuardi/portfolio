@@ -527,14 +527,35 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         }
         else if (m.isMeshBasicMaterial && o.userData._colOrig !== undefined) m.color.setHex(o.userData._colOrig);
       }
-      /* Shared hover halo sprite (round 10): additive, so it reads as a
-         warm glow over any surface, bright or dark. The old emissive
-         tint alone was too subtle on bright materials under ACES to
-         read as a glow at all. */
+      /* Hover halo, round 11: an annulus (ring) texture, not a soft
+         blob. The round 10 blob failed for two compounding reasons:
+         its brightest centre sits at the hovered group's Box3 centre
+         — inside/behind the object's own front surface — so the depth
+         test swallows exactly the bright part, and the faint outer
+         gradient that survives is an additive wash over an
+         already-bright ACES-tonemapped surface, which compresses to
+         near-invisible. A ring puts the bright band OUTSIDE the
+         object's silhouette (over the wall behind it) with a
+         transparent centre, so it reads as a halo instead of a wash.
+         depthTest:false guarantees it can never be occluded by the
+         object it is meant to highlight. */
+      function ringSpriteTex(){
+        var c = document.createElement('canvas'); c.width = c.height = 256;
+        var g = c.getContext('2d');
+        var rg = g.createRadialGradient(128, 128, 0, 128, 128, 128);
+        rg.addColorStop(0, 'rgba(255,154,42,0)');
+        rg.addColorStop(0.60, 'rgba(255,154,42,0)');
+        rg.addColorStop(0.72, 'rgba(255,154,42,0.95)');
+        rg.addColorStop(0.82, 'rgba(255,154,42,0.55)');
+        rg.addColorStop(0.92, 'rgba(255,154,42,0)');
+        rg.addColorStop(1, 'rgba(255,154,42,0)');
+        g.fillStyle = rg; g.fillRect(0, 0, 256, 256);
+        return new THREE.CanvasTexture(c);
+      }
       var glowSprite = new THREE.Sprite(new THREE.SpriteMaterial({
-        map: dotSprite(), color: 0xffa63d, transparent: true, opacity: 0,
-        blending: THREE.AdditiveBlending, depthWrite: false }));
-      glowSprite.renderOrder = 5;
+        map: ringSpriteTex(), color: 0xffffff, transparent: true, opacity: 0,
+        blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false }));
+      glowSprite.renderOrder = 10;
       scene.add(glowSprite);
       function updateHover(hit, x, y){
         var key = hit ? hit.type + ':' + hit.id : null;
@@ -551,9 +572,12 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
               var h = o.userData.hit;
               if (h && (h.type + ':' + h.id) === key) applyGlow(o);
             });
-            /* Round 10: place the halo on the hovered group (world-space
-               sprite, so it stays glued to the object while the camera
-               moves). Sized from the group's bounding box. */
+            /* Round 11: place the halo ring on the hovered group
+               (world-space sprite, so it stays glued to the object
+               while the camera moves). Sized from the group's bounding
+               box: the ring's bright band sits at ~0.72 of the
+               sprite's radius, so a 1.8x scale puts the band just
+               outside the object's silhouette. */
             var box = new THREE.Box3();
             var any = false;
             clickables.forEach(function(o){
@@ -565,8 +589,8 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
               var s = box.getSize(new THREE.Vector3());
               var m = Math.max(s.x, s.y, s.z);
               glowSprite.position.copy(c);
-              glowSprite.scale.setScalar(Math.min(6, Math.max(1.6, m * 1.7)));
-              glowSprite.material.opacity = 0.5;
+              glowSprite.scale.setScalar(Math.min(8, Math.max(2.0, m * 1.8)));
+              glowSprite.material.opacity = 0.75;
             }
           } else {
             glowSprite.material.opacity = 0;
@@ -873,28 +897,34 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         closeMenu();
         closeDetail();
         hideHallBar();
-        roomTitleText.textContent = p.world;
-        roomTitle.classList.add('show');
-        enterLabel.textContent = 'Jelajahi ' + p.name;
-        actionBar.classList.add('show');
-        backBtn.classList.add('show');
-        hint.classList.add('hide');
-        /* Round 9: report the destination the moment it is chosen, not
-           when the flight lands — the dot nav label used to lag one stop
-           behind for the whole flight. */
-        notifyLocation(id);
+        /* Room chrome + location, round 11: for a manual move (dot,
+           keyboard, arch, swipe) the destination is reported the
+           moment it is chosen — the dot nav label used to lag one
+           stop behind for the whole flight (round 9). For a
+           tour-driven move the same instant update would put the UI
+           1.9–2.4 s ahead of the camera at every stop (the desync
+           seen in the round 10 check), so the tour reports the room
+           only when the camera actually lands (see arrived). */
+        var showRoomUI = function(){
+          roomTitleText.textContent = p.world;
+          roomTitle.classList.add('show');
+          enterLabel.textContent = 'Jelajahi ' + p.name;
+          actionBar.classList.add('show');
+          backBtn.classList.add('show');
+          hint.classList.add('hide');
+          notifyLocation(id);
+        };
+        if (!fromTour) showRoomUI();
         var arrived = function(){
           mode = 'room'; currentRoom = id;
           tRoomYaw = 0; tRoomPitch = 0; roomYaw = 0; roomPitch = 0;
-          notifyLocation(id);
-          /* Round 9: the tour dwell starts at arrival, not at departure.
-             The old fixed 6.5 s timer from departure left under 2 s of
-             dwell once a slow (throttled) 2.4 s flight was subtracted,
-             so middle stops could pass unobserved. */
-          if (tour){
-            clearTimeout(tour.timer);
-            tour.timer = setTimeout(tourStep, 6500);
-          }
+          if (fromTour) showRoomUI(); else notifyLocation(id);
+          /* Round 11: the tour dwell is an absolute wall-clock
+             deadline (tour.dwellUntil), checked every frame in
+             animate — a lone setTimeout could be dropped by a stray
+             clearTimeout and the tour would then advance the moment
+             the flight lands, with no dwell at all. */
+          if (tour) tour.dwellUntil = performance.now() + 6500;
         };
         if (currentRoom){
           /* room-to-room (or retargeted mid-flight between rooms): swing
@@ -931,7 +961,7 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         if (i < 0) return;
         goRoom(order[(i + dir + order.length) % order.length]);
       }
-      function leaveRoom(){
+      function leaveRoom(fromTour){
         /* Also allow aborting an in-flight entry: the back button is already
            visible during the 1.9s entry flight, so a click then was silently
            swallowed by the old room-only guard. flyTo() replaces the pending
@@ -949,9 +979,12 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         hideHallBar();
         /* Round 9: same instant-location rule as goRoom — the dot nav
            must show Aula the moment the return starts, and leaving the
-           room by any route ends a running tour. */
+           room by any route ends a running tour. Round 11: at the end
+           of a tour the label follows the same rule as the tour stops
+           and only flips to Aula when the camera lands back in the
+           hall (see the flight's done callback, below). */
         if (tour) stopTour();
-        notifyLocation(null);
+        if (!fromTour) notifyLocation(null);
         flyTo(v.pos, v.tgt, reduced ? 0.4 : 1.7, function(){ mode = 'hall'; currentRoom = null; notifyLocation(null); });
       }
 
@@ -991,28 +1024,33 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       }
 
       /* ---- auto tour: walks the three rooms in order, then returns ----
-         Round 9: the dwell timer is armed by the arrival callback (see
-         goRoom), so every stop lasts a full ~6.5 s AFTER the camera
-         lands — the old timer ran from departure and slow flights ate
-         the dwell. tourStep only advances when the move actually
-         started; a swallowed call (flight in progress) retries shortly
-         instead of skipping a room. */
+         Round 11: the dwell is an absolute wall-clock deadline
+         (tour.dwellUntil), armed by the arrival callback (see goRoom)
+         and checked every frame in animate, so every stop lasts a
+         full ~6.5 s AFTER the camera lands. A lone setTimeout dwell
+         (rounds 9–10) could be dropped by a stray clearTimeout and
+         the tour would then advance the moment the flight lands.
+         tourStep only advances when the move actually started; a
+         swallowed call (flight in progress) retries shortly instead
+         of skipping a room. During the tour the label/title follow
+         the camera (they flip at arrival, not at departure), so the
+         UI can never run ahead of the camera mid-flight. */
       var tour = null;
       function startTour(){
         stopTour();
-        tour = { step: 0, timer: 0 };
+        tour = { step: 0, timer: 0, dwellUntil: 0 };
         notifyTour(true);
         tourStep();
       }
       function tourStep(){
         if (!tour) return;
         var order = PROJECTS.map(function(p){ return p.id; });
-        if (tour.step >= order.length){ stopTour(); leaveRoom(); return; }
+        if (tour.step >= order.length){ stopTour(); leaveRoom(true); return; }
         var target = order[tour.step];
         if (!goRoom(target, true)){
           /* a flight is already in progress: do not advance — retry
              shortly; the in-flight arrival (or this retry) arms the
-             dwell timer. */
+             dwell deadline. */
           clearTimeout(tour.timer);
           tour.timer = setTimeout(tourStep, 1200);
           return;
@@ -1020,9 +1058,8 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         tour.step++;
         if (mode === 'room' && currentRoom === target){
           /* already standing in the target room: no flight, so no
-             arrival will arm the dwell timer — arm it here. */
-          clearTimeout(tour.timer);
-          tour.timer = setTimeout(tourStep, 6500);
+             arrival will arm the dwell deadline — arm it here. */
+          tour.dwellUntil = performance.now() + 6500;
         }
       }
       function stopTour(){
@@ -1201,6 +1238,17 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
               r.camPos.z + Math.cos(ang) * len
             );
           }
+          /* Round 11: tour dwell watchdog — advance only once the full
+             6.5 s dwell has elapsed since landing. The deadline is
+             absolute wall-clock time, checked every frame, so the
+             dwell can neither be cut short by a cleared timer nor
+             stretched by a throttled one. tourStep() clears
+             dwellUntil before moving, so this can never
+             double-advance a step. */
+          if (tour && mode === 'room' && tour.dwellUntil && performance.now() >= tour.dwellUntil){
+            tour.dwellUntil = 0;
+            tourStep();
+          }
           camera.position.copy(camPos);
           camera.lookAt(camTarget);
           /* Round 9: re-check what sits under the pointer every frame.
@@ -1260,11 +1308,11 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
 
   /* initial location for the dot nav: the hall */
   if (opts && opts.onLocation) opts.onLocation(null);
-  /* Build marker (round 10): lets a visual check confirm which build is
+  /* Build marker (round 11): lets a visual check confirm which build is
      actually loaded, so a stale-cache check can never again be mistaken
      for a failed fix. */
-  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r10';
+  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r11';
   var sceneEl = document.getElementById('scene');
-  if (sceneEl) sceneEl.dataset.build = 'r10';
+  if (sceneEl) sceneEl.dataset.build = 'r11';
   return gl;
 }
