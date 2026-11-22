@@ -245,6 +245,17 @@ export function startGallery(projects: Project[]): GalleryApi {
           g.fillRect(Math.random()*w, Math.random()*h, 1.4, 1.4);
         }
       }, 6, 6);
+      /* Room floors use their own clone of the wood texture, repeated so one
+         tile covers the same world size as on the hall floor (~7.6 units).
+         Before, rooms repeated the texture 6x over 11 units (planks 4x
+         smaller than the hall's) and sat coplanar with it at y=0 — the
+         z-fight between the two floors showed up as the diagonal V-seam,
+         worst in Siaprak where the room planks run ~54 deg to the hall
+         planks. Room floors are also lifted to y=0.02 (see below) so the
+         two floors can never z-fight again. */
+      var woodTexRoom = woodTex.clone();
+      woodTexRoom.repeat.set(1.5, 1.2);
+      woodTexRoom.needsUpdate = true;
       var wallTex = canvasTex(1024, 512, function(g, w, h){
         g.fillStyle = '#e9dcc2'; g.fillRect(0,0,w,h);
         /* plaster grain: speckle + vertical streaks so the wall reads as a surface */
@@ -311,29 +322,50 @@ export function startGallery(projects: Project[]): GalleryApi {
         t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
         return t;
       }
-      /* granite-ish speckle for the stone knot: flat colour read as plastic */
+      /* Granite for the stone knot. Round 3's version was invisible: 1-2px
+         speckles at alpha <=0.24 on a 256px texture repeated 2x over a
+         ~0.5-unit knot are sub-pixel on screen, and the pale #b3a184 base
+         washed out under ACES. This one is 512px, repeat 1, with 3-9px
+         speckles at high contrast over a darker base, plus thick veins and
+         large soft mottling, so the stone reads as stone at any distance. */
       var stoneTex = (function(){
-        var c = document.createElement('canvas'); c.width = c.height = 256;
+        var c = document.createElement('canvas'); c.width = c.height = 512;
         var g = c.getContext('2d');
-        g.fillStyle = '#b3a184'; g.fillRect(0, 0, 256, 256);
-        for (var i = 0; i < 2600; i++){
-          var v = Math.random();
-          g.fillStyle = v < 0.5 ? 'rgba(70,58,40,' + (0.08 + Math.random()*0.16) + ')'
-                                : 'rgba(235,225,200,' + (0.08 + Math.random()*0.14) + ')';
-          g.fillRect(Math.random()*256, Math.random()*256, 1 + Math.random()*2.2, 1 + Math.random()*2.2);
+        g.fillStyle = '#8a7d68'; g.fillRect(0, 0, 512, 512);
+        /* large soft mottling so the base is not a flat wash */
+        for (var m = 0; m < 46; m++){
+          var mx = Math.random()*512, my = Math.random()*512, mr = 24 + Math.random()*56;
+          var mg = g.createRadialGradient(mx, my, 0, mx, my, mr);
+          var dark = Math.random() < 0.55;
+          mg.addColorStop(0, dark ? 'rgba(74,63,48,' + (0.10 + Math.random()*0.10) + ')'
+                                  : 'rgba(214,203,178,' + (0.08 + Math.random()*0.08) + ')');
+          mg.addColorStop(1, 'rgba(0,0,0,0)');
+          g.fillStyle = mg; g.beginPath(); g.arc(mx, my, mr, 0, 7); g.fill();
         }
-        for (var j = 0; j < 9; j++){
-          g.strokeStyle = 'rgba(80,66,44,' + (0.1 + Math.random()*0.12) + ')';
-          g.lineWidth = 1 + Math.random();
-          g.beginPath();
-          var sx = Math.random()*256, sy = Math.random()*256;
-          g.moveTo(sx, sy);
-          g.bezierCurveTo(sx + 40, sy + (Math.random()*40-20), sx + 90, sy + (Math.random()*40-20), sx + 140, sy + (Math.random()*30-15));
-          g.stroke();
+        /* big high-contrast granite speckle: dark grains + light quartz */
+        for (var i = 0; i < 5200; i++){
+          var v = Math.random();
+          if (v < 0.45) g.fillStyle = 'rgba(38,31,22,' + (0.35 + Math.random()*0.4) + ')';
+          else if (v < 0.8) g.fillStyle = 'rgba(222,212,190,' + (0.3 + Math.random()*0.35) + ')';
+          else g.fillStyle = 'rgba(96,82,62,' + (0.3 + Math.random()*0.3) + ')';
+          var s = 2.5 + Math.random()*6.5;
+          g.fillRect(Math.random()*512, Math.random()*512, s, s);
+        }
+        /* thick dark veins, drawn three times (x-w, x, x+w) so they tile */
+        for (var j = 0; j < 14; j++){
+          g.strokeStyle = 'rgba(52,42,30,' + (0.35 + Math.random()*0.25) + ')';
+          g.lineWidth = 2 + Math.random()*2.5;
+          var sx = Math.random()*512, sy = Math.random()*512;
+          [-512, 0, 512].forEach(function(off){
+            g.beginPath();
+            g.moveTo(sx + off, sy);
+            g.bezierCurveTo(sx + 60 + off, sy + (Math.random()*70-35), sx + 150 + off, sy + (Math.random()*70-35), sx + 240 + off, sy + (Math.random()*50-25));
+            g.stroke();
+          });
         }
         var t = new THREE.CanvasTexture(c);
         t.colorSpace = THREE.SRGBColorSpace;
-        t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(2, 2);
+        t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(1, 1);
         t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
         return t;
       })();
@@ -346,9 +378,20 @@ export function startGallery(projects: Project[]): GalleryApi {
         g.fillStyle = rg; g.fillRect(0, 0, 256, 256);
         return new THREE.CanvasTexture(c);
       })();
-      function contactShadow(x, y, z, r, parent){
+      /* stronger variant for the hall plinth: the plain disc's visible ring
+         (outside the 0.95 plinth base) is only ~0.55 wide at alpha ~0.2,
+         too faint against the light hall floor to read as a contact shadow. */
+      var contactTexStrong = (function(){
+        var c = document.createElement('canvas'); c.width = c.height = 256;
+        var g = c.getContext('2d');
+        var rg = g.createRadialGradient(128, 128, 8, 128, 128, 128);
+        rg.addColorStop(0, 'rgba(24,16,8,0.68)'); rg.addColorStop(0.6, 'rgba(24,16,8,0.38)'); rg.addColorStop(1, 'rgba(24,16,8,0)');
+        g.fillStyle = rg; g.fillRect(0, 0, 256, 256);
+        return new THREE.CanvasTexture(c);
+      })();
+      function contactShadow(x, y, z, r, parent, tex){
         var m = new THREE.Mesh(new THREE.PlaneGeometry(r*2, r*2),
-          new THREE.MeshBasicMaterial({ map: contactTex, transparent:true, depthWrite:false }));
+          new THREE.MeshBasicMaterial({ map: tex || contactTex, transparent:true, depthWrite:false }));
         m.rotation.x = -Math.PI/2; m.position.set(x, y, z); parent.add(m);
       }
       function dotSprite(){
@@ -374,6 +417,7 @@ export function startGallery(projects: Project[]): GalleryApi {
         creamPlain: new THREE.MeshStandardMaterial({ color:0xece4d2, roughness:.96 }),
         woodDark: new THREE.MeshStandardMaterial({ color:0x8a6844, roughness:.7 }),
         woodFloor: new THREE.MeshStandardMaterial({ map: woodTex, roughness:.75 }),
+        woodFloorRoom: new THREE.MeshStandardMaterial({ map: woodTexRoom, roughness:.75 }),
         stone: new THREE.MeshStandardMaterial({ color:0x9a958a, roughness:.9 }),
         plinth: new THREE.MeshStandardMaterial({ color:0x55534e, roughness:.85 }),
         paper: new THREE.MeshStandardMaterial({ color:0xf6f1e3, roughness:.9 })
@@ -415,7 +459,7 @@ export function startGallery(projects: Project[]): GalleryApi {
       var plinth = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.95, 0.5, 40), MAT.stone);
       plinth.position.y = 0.25; plinth.castShadow = plinth.receiveShadow = true;
       hall.add(plinth);
-      contactShadow(0, 0.006, 0, 1.5, hall);
+      contactShadow(0, 0.008, 0, 1.9, hall, contactTexStrong);
       var knot = new THREE.Mesh(new THREE.TorusKnotGeometry(0.34, 0.12, 120, 16),
         new THREE.MeshStandardMaterial({ map:stoneTex, bumpMap:stoneTex, bumpScale:0.6, roughness:.85 }));
       knot.scale.setScalar(0.62);
@@ -548,8 +592,8 @@ export function startGallery(projects: Project[]): GalleryApi {
         scene.add(room);
 
         var wallMat = new THREE.MeshStandardMaterial({ color:p.wall, roughness:.95 });
-        var rFloor = new THREE.Mesh(new THREE.PlaneGeometry(RW, RD), MAT.woodFloor);
-        rFloor.rotation.x = -Math.PI/2; rFloor.receiveShadow = true; room.add(rFloor);
+        var rFloor = new THREE.Mesh(new THREE.PlaneGeometry(RW, RD), MAT.woodFloorRoom);
+        rFloor.rotation.x = -Math.PI/2; rFloor.position.y = 0.02; rFloor.receiveShadow = true; room.add(rFloor);
         var back = new THREE.Mesh(new THREE.PlaneGeometry(RW, RH), wallMat);
         back.position.set(0, RH/2, -RD/2); back.receiveShadow = true; room.add(back);
         var left = new THREE.Mesh(new THREE.PlaneGeometry(RD, RH), wallMat);
@@ -593,9 +637,9 @@ export function startGallery(projects: Project[]): GalleryApi {
       /* ================= CAMERA RIG ================= */
       var mode = 'hall';           // 'hall' | 'room' | 'transit'
       var currentRoom = null;
-      var yaw = 0.12, pitch = 0.10, targetYaw = 0.12, targetPitch = 0.10;
+      var yaw = 0.12, pitch = -0.06, targetYaw = 0.12, targetPitch = -0.06;
       var roomYaw = 0, roomPitch = 0, tRoomYaw = 0, tRoomPitch = 0;
-      var camPos = new THREE.Vector3(0, 1.9, 3.1), camTarget = new THREE.Vector3();
+      var camPos = new THREE.Vector3(0, 1.6, 3.6), camTarget = new THREE.Vector3();
       var transit = null;
       var lastInteract = performance.now();
       var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -606,8 +650,15 @@ export function startGallery(projects: Project[]): GalleryApi {
                     toP:pos.clone(), toT:tgt.clone(), done:done };
         mode = 'transit';
       }
+      /* Hall framing, round 4: camera lower (y 1.6) and further back (z 3.6),
+         pitched slightly DOWN (-0.06) instead of up (+0.10). Before, the
+         knot (y 0.82) sat ~19 deg below the camera while the lens pointed
+         5.7 deg up, so the knot centre was ~25 deg below view centre with
+         a 29 deg half-FOV — its bottom fell off-frame. Now the knot centre
+         is ~9 deg below view centre and the plinth base (~21 deg below)
+         clears the hint pill at the bottom edge. */
       function hallView(){
-        var base = new THREE.Vector3(0, 1.9, 3.1);
+        var base = new THREE.Vector3(0, 1.6, 3.6);
         var d = new THREE.Vector3(Math.sin(yaw)*Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw)*Math.cos(pitch));
         return { pos:base, tgt:d.multiplyScalar(10).add(base) };
       }
@@ -629,6 +680,11 @@ export function startGallery(projects: Project[]): GalleryApi {
       }
       function leaveRoom(){
         if (mode !== 'room') return;
+        /* Return to the canonical hall framing: yaw/pitch are whatever the
+           user left them at before entering (e.g. pitched up at the
+           oculus), so without a reset the statue can be out of frame
+           entirely on return. */
+        yaw = targetYaw = 0.12; pitch = targetPitch = -0.06;
         var v = hallView();
         roomTitle.classList.remove('show');
         actionBar.classList.remove('show');
@@ -718,7 +774,7 @@ export function startGallery(projects: Project[]): GalleryApi {
             pitch += (targetPitch - pitch) * Math.min(1, dt * 5);
             var v = hallView();
             camPos.copy(v.pos); camTarget.copy(v.tgt);
-            camPos.y = 1.9 + Math.sin(t * 0.5) * (reduced ? 0 : 0.03);
+            camPos.y = 1.6 + Math.sin(t * 0.5) * (reduced ? 0 : 0.03);
           } else if (mode === 'room' && currentRoom){
             var r = rooms[currentRoom];
             roomYaw += (tRoomYaw - roomYaw) * Math.min(1, dt * 5);
