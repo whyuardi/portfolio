@@ -34,6 +34,7 @@ export function startGallery(projects: Project[]): GalleryApi {
       var roomTitleText = document.getElementById('roomTitleText');
       var menuSheet = document.getElementById('menu');
       var detailSheet = document.getElementById('detail');
+      var detailObserver = null;
 
       function byId(id){ for (var i = 0; i < PROJECTS.length; i++) if (PROJECTS[i].id === id) return PROJECTS[i]; return null; }
 
@@ -108,6 +109,24 @@ export function startGallery(projects: Project[]): GalleryApi {
           note.style.cssText = 'color:var(--ink-soft);line-height:1.65;max-width:32rem;margin:0;';
           note.textContent = 'Studi kasus lengkap dan kode sumber tersedia berdasarkan permintaan — hubungi lewat email di menu Tentang.';
           ctas.appendChild(note);
+        }
+        /* Scroll-reveal for the story beats + spec: the CSS starts them at
+           opacity 0 and only `.in` makes them visible. No code ever added
+           `.in`, so the text sat in the DOM and stayed blank on screen. */
+        if (typeof IntersectionObserver !== 'undefined'){
+          if (detailObserver) detailObserver.disconnect();
+          detailObserver = new IntersectionObserver(function(entries){
+            entries.forEach(function(en){
+              if (en.isIntersecting){ en.target.classList.add('in'); detailObserver.unobserve(en.target); }
+            });
+          }, { root: detailSheet, threshold: 0.1 });
+          story.querySelectorAll('section').forEach(function(sec){ detailObserver.observe(sec); });
+          var specwrap = detailSheet.querySelector('.specwrap');
+          if (specwrap) detailObserver.observe(specwrap);
+        } else {
+          story.querySelectorAll('section').forEach(function(sec){ sec.classList.add('in'); });
+          var specwrap2 = detailSheet.querySelector('.specwrap');
+          if (specwrap2) specwrap2.classList.add('in');
         }
         detailSheet.classList.add('open'); detailSheet.scrollTop = 0;
       }
@@ -215,9 +234,13 @@ export function startGallery(projects: Project[]): GalleryApi {
       var wallTex = canvasTex(1024, 512, function(g, w, h){
         g.fillStyle = '#ede5d5'; g.fillRect(0,0,w,h);
         g.strokeStyle = 'rgba(122,102,74,.13)'; g.lineWidth = 15;
+        /* Each arc is drawn three times (x-w, x, x+w) so the motif tiles
+           seamlessly — before, the repeat seam showed as a vertical line. */
         for (var i = -2; i < 7; i++){
-          g.beginPath(); g.arc(i*190, h*1.15, 300, Math.PI*1.15, Math.PI*1.85); g.stroke();
-          g.beginPath(); g.arc(i*190 + 95, -h*0.15, 300, Math.PI*0.15, Math.PI*0.85); g.stroke();
+          [-w, 0, w].forEach(function(off){
+            g.beginPath(); g.arc(i*190 + off, h*1.15, 300, Math.PI*1.15, Math.PI*1.85); g.stroke();
+            g.beginPath(); g.arc(i*190 + 95 + off, -h*0.15, 300, Math.PI*0.15, Math.PI*0.85); g.stroke();
+          });
         }
         var grad = g.createLinearGradient(0,0,0,h);
         grad.addColorStop(0,'rgba(255,255,255,.20)'); grad.addColorStop(1,'rgba(120,100,70,.10)');
@@ -504,9 +527,9 @@ export function startGallery(projects: Project[]): GalleryApi {
       /* ================= CAMERA RIG ================= */
       var mode = 'hall';           // 'hall' | 'room' | 'transit'
       var currentRoom = null;
-      var yaw = 0.12, pitch = 0.02, targetYaw = 0.12, targetPitch = 0.02;
+      var yaw = 0.12, pitch = 0.06, targetYaw = 0.12, targetPitch = 0.06;
       var roomYaw = 0, roomPitch = 0, tRoomYaw = 0, tRoomPitch = 0;
-      var camPos = new THREE.Vector3(0, 1.7, 0), camTarget = new THREE.Vector3();
+      var camPos = new THREE.Vector3(0, 1.9, 2.6), camTarget = new THREE.Vector3();
       var transit = null;
       var lastInteract = performance.now();
       var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -518,7 +541,7 @@ export function startGallery(projects: Project[]): GalleryApi {
         mode = 'transit';
       }
       function hallView(){
-        var base = new THREE.Vector3(0, 1.7, 0);
+        var base = new THREE.Vector3(0, 1.9, 2.6);
         var d = new THREE.Vector3(Math.sin(yaw)*Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw)*Math.cos(pitch));
         return { pos:base, tgt:d.multiplyScalar(10).add(base) };
       }
@@ -564,7 +587,7 @@ export function startGallery(projects: Project[]): GalleryApi {
           lastInteract = performance.now();
           if (mode === 'hall'){
             targetYaw -= dx * 0.0042;
-            targetPitch = THREE.MathUtils.clamp(targetPitch - dy * 0.0028, -0.32, 0.38);
+            targetPitch = THREE.MathUtils.clamp(targetPitch - dy * 0.0028, -0.32, 1.0);
           } else if (mode === 'room'){
             tRoomYaw = THREE.MathUtils.clamp(tRoomYaw - dx * 0.003, -0.55, 0.55);
             tRoomPitch = THREE.MathUtils.clamp(tRoomPitch - dy * 0.002, -0.16, 0.2);
@@ -629,7 +652,7 @@ export function startGallery(projects: Project[]): GalleryApi {
             pitch += (targetPitch - pitch) * Math.min(1, dt * 5);
             var v = hallView();
             camPos.copy(v.pos); camTarget.copy(v.tgt);
-            camPos.y = 1.7 + Math.sin(t * 0.5) * (reduced ? 0 : 0.03);
+            camPos.y = 1.9 + Math.sin(t * 0.5) * (reduced ? 0 : 0.03);
           } else if (mode === 'room' && currentRoom){
             var r = rooms[currentRoom];
             roomYaw += (tRoomYaw - roomYaw) * Math.min(1, dt * 5);
