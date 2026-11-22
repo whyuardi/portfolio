@@ -238,8 +238,14 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       /* Round 15: 2048 -> 1024. The transmission pass is the frame
          cost now; the shadow map only needs to resolve 0.14-wide
          lattice bars (~5 texels at 1024 over 28 units) and the big
-         soft shapes, which PCFSoft hides. */
-      sun.shadow.mapSize.set(1024, 1024);
+         soft shapes, which PCFSoft hides.
+         Round 17: back to 2048 — the floor grid never read as
+         squares: at 1024 the 0.22 bars are ~8 texels and PCFSoft
+         blurs them into the soft oval the r14–r16 checks saw. At
+         2048 the 0.30 bars are ~22 texels, so the grid edges stay
+         crisp. The shadow map is a one-off 16 MB texture; the
+         transmission pass is still the frame cost. */
+      sun.shadow.mapSize.set(2048, 2048);
       sun.shadow.camera.left = -14; sun.shadow.camera.right = 14;
       sun.shadow.camera.top = 14; sun.shadow.camera.bottom = -14;
       sun.shadow.camera.far = 40;
@@ -248,7 +254,12 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       var fill = new THREE.DirectionalLight(0xdfeaf2, 0.35);
       fill.position.set(-6, 5, -8);
       scene.add(fill);
-      var oculusGlow = new THREE.PointLight(0xffe6bf, 22, 20, 2);
+      /* Round 17: 22 -> 12. This unshadowed point light floods the
+         hall floor and washes out the sun's lattice shadow (it is
+         the biggest unshadowed term on the floor after the hemi
+         light). Halving it lifts the lit/shadowed contrast of the
+         grid without darkening the hall — sun + hemi + fill stay. */
+      var oculusGlow = new THREE.PointLight(0xffe6bf, 12, 20, 2);
       oculusGlow.position.set(0, 5.2, 0);
       scene.add(oculusGlow);
 
@@ -689,13 +700,28 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
          oculus point light floods the floor and kills the contrast.
          Fix: bars 0.14 -> 0.22 (~8 texels), spacing 0.75 -> 0.9
          (bigger cells, bar length 5.6 so the 7x7 grid stays
-         complete), oculusGlow 30 -> 22. */
+         complete), oculusGlow 30 -> 22.
+         Round 17: still no floor grid — the r16 fixes sharpened the
+         grid ON the plinth only. Third cause, verified against the
+         contact-shadow textures: the hall plinth's fake-AO discs
+         (strong disc radius 3.6 at alpha 0.32–0.82 + halo radius 5.0
+         at 0.20–0.34) cover almost the whole lattice shadow, which
+         spans only ±2.7 around (-0.69,-0.35) — the grid's light/dark
+         modulation sits on top of an already-dark radial blob, so
+         the eye reads "soft oval" (the halo disc itself) instead of
+         squares. The plinth top has no such disc, which is why the
+         grid reads there. Fix: bars 0.22 -> 0.30 (chunkier lines),
+         shadow map back to 2048 (see sun), oculusGlow 22 -> 12,
+         and the hall contact discs shrink (strong 3.6 -> 3.0, halo
+         5.0 -> 4.2) so the outer grid cells fall on clean floor —
+         the plinth foot is only radius 0.95, so grounding keeps
+         2+ units of margin. */
       var lattice = new THREE.Group();
       var latticeMat = new THREE.MeshStandardMaterial({ color:0x6d4f30, roughness:.6, metalness:.3 });
       for (var li = -3; li <= 3; li++){
-        var lbx = new THREE.Mesh(new THREE.BoxGeometry(5.6, 0.05, 0.22), latticeMat);
+        var lbx = new THREE.Mesh(new THREE.BoxGeometry(5.6, 0.05, 0.30), latticeMat);
         lbx.position.set(0, 0, li*0.9); lbx.castShadow = true; lattice.add(lbx);
-        var lbz = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.05, 5.6), latticeMat);
+        var lbz = new THREE.Mesh(new THREE.BoxGeometry(0.30, 0.05, 5.6), latticeMat);
         lbz.position.set(li*0.9, 0, 0); lbz.castShadow = true; lattice.add(lbz);
       }
       lattice.position.y = HALL_H + 0.12;
@@ -705,8 +731,13 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       var plinth = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.95, 0.5, 40), MAT.stone);
       plinth.position.y = 0.25; plinth.castShadow = plinth.receiveShadow = true;
       hall.add(plinth);
-      contactShadow(0, 0.012, 0, 3.6, hall, contactTexStrong);
-      contactShadow(0, 0.010, 0, 5.0, hall, contactTexHalo);
+      /* Round 17: 3.6 -> 3.0 and 5.0 -> 4.2 — the wide fake-AO discs
+         were swallowing the lattice shadow (see the lattice note):
+         the grid spans only ±2.7, so it sat entirely under the
+         discs. The plinth foot is radius 0.95, so grounding keeps
+         2+ units of margin. */
+      contactShadow(0, 0.012, 0, 3.0, hall, contactTexStrong);
+      contactShadow(0, 0.010, 0, 4.2, hall, contactTexHalo);
       /* base ring: a soft dark band hugging the plinth foot. The flat discs
          read well from the high default camera, but from a low/close camera
          they foreshorten away and hide behind the plinth's widening base —
@@ -932,6 +963,28 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
           crown.position.y = 0.135; crown.castShadow = true; gemGrp.add(crown);
           gemGrp.position.y = 0.85;
           grp.add(gemGrp); grp.userData.spin = gemGrp;
+          /* Round 17: invisible hit proxy around the crystal. Diagnosis
+             (Node probe with the installed three r170, r16 camera):
+             the crystal raycasts fine — a ray through its projected
+             centre hits the girdle first, and the r16 checker's hover
+             point (960,350) sits ~126 px ABOVE the crystal's top edge
+             (crystal spans y 476–617 on a 998 px frame), so the ray
+             correctly hit only the painting. Transmission does NOT let
+             the ray pass through. The real defect is target size: the
+             crystal is a ~172x141 px target surrounded by a 4.94x3.24
+             painting sharing the same 'detail' key, so any hover near
+             the statue easily lands on the painting and the ring
+             balloons to ~700 px around it. The proxy (a 0.62 sphere,
+             rotation-invariant so the spin doesn't matter) makes the
+             crystal's neighbourhood a forgiving target: any ray inside
+             it returns the proxy, and the ring is sized from the
+             proxy's Box3 (~1.67) so it hugs the crystal + gold ring
+             instead of the painting. Same hit key, same tooltip, same
+             click action — only the ring changes. Opacity 0, no depth
+             write, no shadow: it renders nothing. */
+          var gemHit = new THREE.Mesh(new THREE.SphereGeometry(0.62, 12, 10),
+            new THREE.MeshBasicMaterial({ transparent:true, opacity:0, depthWrite:false }));
+          gemGrp.add(gemHit);
           /* profiled gold band (lathe, raised centre ridge) — not a plain torus */
           var ringPts = [
             new THREE.Vector2(0.58, -0.035), new THREE.Vector2(0.63, -0.02),
@@ -1737,8 +1790,8 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
   /* Build marker (round 13): lets a visual check confirm which build is
      actually loaded, so a stale-cache check can never again be mistaken
      for a failed fix. */
-  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r16';
+  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r17';
   var sceneEl = document.getElementById('scene');
-  if (sceneEl) sceneEl.dataset.build = 'r16';
+  if (sceneEl) sceneEl.dataset.build = 'r17';
   return gl;
 }
