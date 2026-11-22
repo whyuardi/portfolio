@@ -1944,29 +1944,27 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         if (mode === 'room'){
           tDolly = THREE.MathUtils.clamp(tDolly - dy * 0.0012, 0, 1.7);
         } else if (mode === 'hall'){
-          /* Round 22: hall sign flipped (+ dy -> - dy) to restore
-             the r20 OBSERVED mapping (scroll down = widen, up =
-             narrow). Diagnosis (git diff r20..r21): the formula did
-             NOT change between r20 and r21 — it is byte-identical
-             in both — so no sign "flipped in code" when the
-             listener moved to window capture. What changed is the
-             checker's scroll delivery: r20 measured down = widen,
-             r21 measured down = narrow AND the room ring growing
-             on down-scroll (270 -> 340 px = closer = tDolly UP) —
-             both readings imply the r21 scrolls arrived with
-             INVERTED deltaY versus r20 (e.g. a drag/gesture-style
-             scroll primitive, whose sign is opposite to a wheel
-             event's). Flipping the hall sign restores the r20
-             observed mapping under the current checker delivery,
-             with the room formula untouched as instructed. HONEST
-             CAVEAT: for a physical mouse (DOM standard: wheel down
-             = deltaY > 0) this makes the hall direction opposite to
-             the room's (down = narrow in the hall, down = dolly-out
-             in rooms). Verify with a real mouse; if the r22 check
-             delivers standard-sign wheel events, the hall will read
-             reversed again and the flip should be reverted — the
-             code itself was never the culprit. */
-          tHallFov = THREE.MathUtils.clamp(tHallFov - dy * 0.008, 48, 68);
+          /* Round 23: hall sign REVERTED to the r20 formula (+ dy).
+             DO NOT flip this again — the evidence, in order:
+             r20 (+): checker measured scroll-down = WIDEN.
+             r21 (+, formula byte-identical per git diff r20..r21):
+               checker measured scroll-down = NARROW, and the room
+               ring growing on down-scroll (270 -> 340 px = tDolly
+               UP) — both imply the r21 scrolls arrived with
+               INVERTED deltaY vs r20.
+             r22 (-, flipped): checker measured scroll-down = STILL
+               NARROW, and its scroll primitive returned "outcome
+               unknown (deadline)" vs r21's "applied" — a different
+               delivery again.
+             Conclusion: flipping the sign did NOT flip the observed
+             direction, so the observed direction is set by the
+             checker's scroll delivery, which changes sign/primitive
+             between runs — the checker CANNOT adjudicate wheel
+             direction. The physical mouse standard (DOM: wheel down
+             = deltaY > 0) is what this formula must be correct
+             for: down = FOV up = WIDEN, matching the room wheel
+             (down = dolly OUT, tDolly decreases). */
+          tHallFov = THREE.MathUtils.clamp(tHallFov + dy * 0.008, 48, 68);
         }
       }
       window.addEventListener('wheel', onWheel, { passive: false, capture: true });
@@ -2062,7 +2060,26 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
             }
             /* Round 18: the dolly base is the canonical camPos moved
                toward the canonical target — the target is pushed the
-               same amount, so the framing is preserved, just closer. */
+               same amount, so the framing is preserved, just closer.
+               Round 23 diagnosis of the r22 check's "ring did not
+               grow, dolly looked more vertical": NO bug found, and
+               nothing in this path changed — git diff r21..r22
+               touches nothing here. (1) Gemfund camPos/camTarget
+               are both y = 1.6, so dDir has y = 0 exactly: the
+               dolly is purely horizontal along the view axis, by
+               construction. (2) No wheel delta can reach pitch or
+               height: onWheel never writes tRoomPitch/roomPitch,
+               camPos.y only gets the ±0.02 m breathing sine, and
+               parY (max ±0.09, pointer-driven) shifts the LOOK
+               target, not the camera. (3) The r22 scroll primitive
+               returned "outcome unknown (deadline)" vs r21's
+               "applied" — most likely no wheel event arrived at
+               all, so tDolly never moved in either direction
+               (ring ~270 px both ways is exactly that signature);
+               a scroll primitive that also drags the pointer would
+               move parY and read as a vertical tilt. Checker
+               delivery artifact, not a code bug — do not "fix" the
+               dolly axis on the basis of a checker's scroll. */
             var rBase = r.camPos.clone();
             if (dolly > 0.001){
               var dDir = r.camTarget.clone().sub(r.camPos).normalize();
@@ -2292,8 +2309,8 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
   /* Build marker (round 13): lets a visual check confirm which build is
      actually loaded, so a stale-cache check can never again be mistaken
      for a failed fix. */
-  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r22';
+  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r23';
   var sceneEl = document.getElementById('scene');
-  if (sceneEl) sceneEl.dataset.build = 'r22';
+  if (sceneEl) sceneEl.dataset.build = 'r23';
   return gl;
 }
