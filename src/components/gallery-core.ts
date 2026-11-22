@@ -342,24 +342,34 @@ export function startGallery(projects: Project[]): GalleryApi {
           mg.addColorStop(1, 'rgba(0,0,0,0)');
           g.fillStyle = mg; g.beginPath(); g.arc(mx, my, mr, 0, 7); g.fill();
         }
-        /* big high-contrast granite speckle: dark grains + light quartz */
-        for (var i = 0; i < 5200; i++){
+        /* big high-contrast granite speckle: dark grains + light quartz.
+           Drawn as tall ellipses, NOT squares: the torus-knot UV maps the
+           knot's ~5.5-unit length to texture-x but only the ~0.75-unit tube
+           circumference to texture-y, so a square reads on the surface as a
+           6x streak along the knot (the wood/rope look of round 4). An
+           ellipse ~6x taller than wide compensates and reads as a round
+           granite grain. */
+        for (var i = 0; i < 7000; i++){
           var v = Math.random();
-          if (v < 0.45) g.fillStyle = 'rgba(38,31,22,' + (0.35 + Math.random()*0.4) + ')';
-          else if (v < 0.8) g.fillStyle = 'rgba(222,212,190,' + (0.3 + Math.random()*0.35) + ')';
-          else g.fillStyle = 'rgba(96,82,62,' + (0.3 + Math.random()*0.3) + ')';
-          var s = 2.5 + Math.random()*6.5;
-          g.fillRect(Math.random()*512, Math.random()*512, s, s);
+          if (v < 0.45) g.fillStyle = 'rgba(38,31,22,' + (0.5 + Math.random()*0.35) + ')';
+          else if (v < 0.8) g.fillStyle = 'rgba(222,212,190,' + (0.45 + Math.random()*0.35) + ')';
+          else g.fillStyle = 'rgba(96,82,62,' + (0.4 + Math.random()*0.25) + ')';
+          var rx = 2.5 + Math.random()*3.5, ry = rx * 6;
+          g.beginPath();
+          g.ellipse(Math.random()*512, Math.random()*512, rx, ry, 0, 0, 7);
+          g.fill();
         }
-        /* thick dark veins, drawn three times (x-w, x, x+w) so they tile */
-        for (var j = 0; j < 14; j++){
-          g.strokeStyle = 'rgba(52,42,30,' + (0.35 + Math.random()*0.25) + ')';
-          g.lineWidth = 2 + Math.random()*2.5;
+        /* sparse thin veins: round 4's 14 thick veins dominated the surface
+           and, stretched along the knot, read as wood grain. Fewer, thinner,
+           fainter and shorter so the speckle is the first thing you see. */
+        for (var j = 0; j < 5; j++){
+          g.strokeStyle = 'rgba(52,42,30,' + (0.18 + Math.random()*0.12) + ')';
+          g.lineWidth = 1 + Math.random();
           var sx = Math.random()*512, sy = Math.random()*512;
           [-512, 0, 512].forEach(function(off){
             g.beginPath();
             g.moveTo(sx + off, sy);
-            g.bezierCurveTo(sx + 60 + off, sy + (Math.random()*70-35), sx + 150 + off, sy + (Math.random()*70-35), sx + 240 + off, sy + (Math.random()*50-25));
+            g.bezierCurveTo(sx + 30 + off, sy + (Math.random()*40-20), sx + 80 + off, sy + (Math.random()*40-20), sx + 130 + off, sy + (Math.random()*30-15));
             g.stroke();
           });
         }
@@ -378,21 +388,38 @@ export function startGallery(projects: Project[]): GalleryApi {
         g.fillStyle = rg; g.fillRect(0, 0, 256, 256);
         return new THREE.CanvasTexture(c);
       })();
-      /* stronger variant for the hall plinth: the plain disc's visible ring
-         (outside the 0.95 plinth base) is only ~0.55 wide at alpha ~0.2,
-         too faint against the light hall floor to read as a contact shadow. */
+      /* stronger variant for the hall plinth. Round 4's version faded too
+         fast (0.38 by mid-radius, 0 at the edge), so from the low default
+         camera the ring outside the 0.95 plinth base read as nothing. This
+         one holds high alpha far out: the visible ring stays 0.6 -> 0.4
+         across most of its width instead of collapsing to zero. */
       var contactTexStrong = (function(){
         var c = document.createElement('canvas'); c.width = c.height = 256;
         var g = c.getContext('2d');
-        var rg = g.createRadialGradient(128, 128, 8, 128, 128, 128);
-        rg.addColorStop(0, 'rgba(24,16,8,0.68)'); rg.addColorStop(0.6, 'rgba(24,16,8,0.38)'); rg.addColorStop(1, 'rgba(24,16,8,0)');
+        var rg = g.createRadialGradient(128, 128, 4, 128, 128, 128);
+        rg.addColorStop(0, 'rgba(24,16,8,0.72)'); rg.addColorStop(0.35, 'rgba(24,16,8,0.62)');
+        rg.addColorStop(0.65, 'rgba(24,16,8,0.42)'); rg.addColorStop(0.85, 'rgba(24,16,8,0.18)');
+        rg.addColorStop(1, 'rgba(24,16,8,0)');
+        g.fillStyle = rg; g.fillRect(0, 0, 256, 256);
+        return new THREE.CanvasTexture(c);
+      })();
+      /* wide faint halo: a second, much larger disc so the plinth reads as
+         grounded from the low default camera, where a single tight disc
+         foreshortens to a thin band. */
+      var contactTexHalo = (function(){
+        var c = document.createElement('canvas'); c.width = c.height = 256;
+        var g = c.getContext('2d');
+        var rg = g.createRadialGradient(128, 128, 4, 128, 128, 128);
+        rg.addColorStop(0, 'rgba(24,16,8,0.16)'); rg.addColorStop(0.7, 'rgba(24,16,8,0.10)');
+        rg.addColorStop(1, 'rgba(24,16,8,0)');
         g.fillStyle = rg; g.fillRect(0, 0, 256, 256);
         return new THREE.CanvasTexture(c);
       })();
       function contactShadow(x, y, z, r, parent, tex){
         var m = new THREE.Mesh(new THREE.PlaneGeometry(r*2, r*2),
           new THREE.MeshBasicMaterial({ map: tex || contactTex, transparent:true, depthWrite:false }));
-        m.rotation.x = -Math.PI/2; m.position.set(x, y, z); parent.add(m);
+        m.rotation.x = -Math.PI/2; m.position.set(x, y, z);
+        m.renderOrder = 2; parent.add(m);
       }
       function dotSprite(){
         var c = document.createElement('canvas'); c.width = c.height = 64;
@@ -459,9 +486,10 @@ export function startGallery(projects: Project[]): GalleryApi {
       var plinth = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.95, 0.5, 40), MAT.stone);
       plinth.position.y = 0.25; plinth.castShadow = plinth.receiveShadow = true;
       hall.add(plinth);
-      contactShadow(0, 0.008, 0, 1.9, hall, contactTexStrong);
+      contactShadow(0, 0.012, 0, 2.6, hall, contactTexStrong);
+      contactShadow(0, 0.010, 0, 3.6, hall, contactTexHalo);
       var knot = new THREE.Mesh(new THREE.TorusKnotGeometry(0.34, 0.12, 120, 16),
-        new THREE.MeshStandardMaterial({ map:stoneTex, bumpMap:stoneTex, bumpScale:0.6, roughness:.85 }));
+        new THREE.MeshStandardMaterial({ map:stoneTex, bumpMap:stoneTex, bumpScale:0.9, roughness:.85 }));
       knot.scale.setScalar(0.62);
       knot.position.y = 0.82; knot.castShadow = true;
       hall.add(knot);
@@ -621,7 +649,10 @@ export function startGallery(projects: Project[]): GalleryApi {
 
         var rPlinth = new THREE.Mesh(new THREE.CylinderGeometry(1.05, 1.12, 0.14, 44), MAT.plinth);
         rPlinth.position.set(0, 0.07, -0.4); rPlinth.castShadow = rPlinth.receiveShadow = true; room.add(rPlinth);
-        contactShadow(0, 0.006, -0.4, 1.7, room);
+        /* y=0.028: the room floor sits at y=0.02 (round 4 z-fight fix), so a
+           disc at the old y=0.006 would sit UNDER the opaque floor and lose
+           the depth test entirely. */
+        contactShadow(0, 0.028, -0.4, 1.7, room);
         var sculpt = buildSculpture(p);
         sculpt.position.set(0, 0.14, -0.4); room.add(sculpt);
         markClickable(sculpt, { type:'detail', id:p.id });
@@ -679,7 +710,11 @@ export function startGallery(projects: Project[]): GalleryApi {
         });
       }
       function leaveRoom(){
-        if (mode !== 'room') return;
+        /* Also allow aborting an in-flight entry: the back button is already
+           visible during the 1.9s entry flight, so a click then was silently
+           swallowed by the old room-only guard. flyTo() replaces the pending
+           transit (its done never fires), so aborting mid-flight is safe. */
+        if (mode !== 'room' && mode !== 'transit') return;
         /* Return to the canonical hall framing: yaw/pitch are whatever the
            user left them at before entering (e.g. pitched up at the
            oculus), so without a reset the statue can be out of frame
