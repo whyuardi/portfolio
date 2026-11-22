@@ -165,12 +165,12 @@ export function startGallery(projects: Project[]): GalleryApi {
       /* ================= RENDERER / SCENE ================= */
       var container = document.getElementById('scene');
       var renderer = new THREE.WebGLRenderer({ antialias:true });
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
       renderer.setSize(window.innerWidth, window.innerHeight);
       renderer.shadowMap.enabled = true;
-      renderer.shadowMap.type = THREE.PCFShadowMap;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      renderer.toneMappingExposure = 1.24;
+      renderer.toneMappingExposure = 1.32;
       if ('outputColorSpace' in renderer) renderer.outputColorSpace = THREE.SRGBColorSpace;
       container.appendChild(renderer.domElement);
 
@@ -189,7 +189,7 @@ export function startGallery(projects: Project[]): GalleryApi {
       var sun = new THREE.DirectionalLight(0xfff1d6, 1.6);
       sun.position.set(4, 12, 2);
       sun.castShadow = true;
-      sun.shadow.mapSize.set(1024, 1024);
+      sun.shadow.mapSize.set(2048, 2048);
       sun.shadow.camera.left = -14; sun.shadow.camera.right = 14;
       sun.shadow.camera.top = 14; sun.shadow.camera.bottom = -14;
       sun.shadow.camera.far = 40;
@@ -198,6 +198,9 @@ export function startGallery(projects: Project[]): GalleryApi {
       var fill = new THREE.DirectionalLight(0xdfeaf2, 0.35);
       fill.position.set(-6, 5, -8);
       scene.add(fill);
+      var oculusGlow = new THREE.PointLight(0xffe6bf, 30, 20, 2);
+      oculusGlow.position.set(0, 5.2, 0);
+      scene.add(oculusGlow);
 
       /* ================= CANVAS TEXTURE HELPERS ================= */
       function canvasTex(w, h, draw, repeatX, repeatY){
@@ -205,47 +208,71 @@ export function startGallery(projects: Project[]): GalleryApi {
         draw(c.getContext('2d'), w, h);
         var t = new THREE.CanvasTexture(c);
         t.colorSpace = THREE.SRGBColorSpace;
+        t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
         if (repeatX){ t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(repeatX, repeatY || 1); }
         return t;
       }
       var woodTex = canvasTex(1024, 1024, function(g, w, h){
         g.fillStyle = '#c9a77e'; g.fillRect(0,0,w,h);
-        var rows = 8;
+        var rows = 10;
         for (var r = 0; r < rows; r++){
           var y = r * h / rows;
-          var l = 62 + Math.random()*10;
-          g.fillStyle = 'hsl(33, 38%, ' + l + '%)';
+          var l = 58 + Math.random()*14;
+          g.fillStyle = 'hsl(33, 40%, ' + l + '%)';
           g.fillRect(0, y, w, h/rows - 2);
-          for (var i = 0; i < 46; i++){
-            g.strokeStyle = 'rgba(120,86,50,' + (0.04 + Math.random()*0.07) + ')';
-            g.lineWidth = 1 + Math.random()*1.4;
+          for (var i = 0; i < 80; i++){
+            g.strokeStyle = 'rgba(110,76,42,' + (0.07 + Math.random()*0.11) + ')';
+            g.lineWidth = 1 + Math.random()*1.6;
             g.beginPath();
             var gy = y + Math.random() * (h/rows - 4);
             g.moveTo(0, gy);
             g.bezierCurveTo(w*0.3, gy + (Math.random()*6-3), w*0.7, gy + (Math.random()*6-3), w, gy);
             g.stroke();
           }
-          g.fillStyle = 'rgba(90,64,38,.35)';
+          /* a knot or two per plank for a real-wood read */
+          if (Math.random() < 0.7){
+            var kx = Math.random()*w, ky = y + h/rows*0.5;
+            g.strokeStyle = 'rgba(96,64,36,.5)'; g.lineWidth = 2;
+            g.beginPath(); g.ellipse(kx, ky, 9 + Math.random()*7, 5 + Math.random()*4, 0, 0, 7); g.stroke();
+            g.beginPath(); g.ellipse(kx, ky, 4, 2.2, 0, 0, 7); g.stroke();
+          }
+          g.fillStyle = 'rgba(90,64,38,.4)';
           g.fillRect(0, y + h/rows - 2, w, 2);
           var seam = Math.random() * w;
           g.fillRect(seam, y, 2, h/rows - 2);
         }
-      }, 3, 3);
+        /* fine speckle so the floor is not a flat wash up close */
+        for (var s2 = 0; s2 < 2600; s2++){
+          g.fillStyle = 'rgba(80,55,30,' + (Math.random()*0.05) + ')';
+          g.fillRect(Math.random()*w, Math.random()*h, 1.4, 1.4);
+        }
+      }, 6, 6);
       var wallTex = canvasTex(1024, 512, function(g, w, h){
         g.fillStyle = '#ede5d5'; g.fillRect(0,0,w,h);
-        g.strokeStyle = 'rgba(122,102,74,.13)'; g.lineWidth = 15;
+        /* plaster grain: faint speckle + vertical streaks so the wall reads as a surface */
+        for (var n = 0; n < 2400; n++){
+          g.fillStyle = 'rgba(120,100,70,' + (0.02 + Math.random()*0.05) + ')';
+          g.fillRect(Math.random()*w, Math.random()*h, 1.5, 1.5);
+        }
+        for (var v = 0; v < 26; v++){
+          g.strokeStyle = 'rgba(120,100,70,' + (0.02 + Math.random()*0.03) + ')';
+          g.lineWidth = 2 + Math.random()*5;
+          var vx = Math.random()*w;
+          g.beginPath(); g.moveTo(vx, 0); g.lineTo(vx + (Math.random()*14-7), h); g.stroke();
+        }
+        g.strokeStyle = 'rgba(122,102,74,.17)'; g.lineWidth = 8;
         /* Each arc is drawn three times (x-w, x, x+w) so the motif tiles
            seamlessly — before, the repeat seam showed as a vertical line. */
-        for (var i = -2; i < 7; i++){
+        for (var i = -4; i < 14; i++){
           [-w, 0, w].forEach(function(off){
-            g.beginPath(); g.arc(i*190 + off, h*1.15, 300, Math.PI*1.15, Math.PI*1.85); g.stroke();
-            g.beginPath(); g.arc(i*190 + 95 + off, -h*0.15, 300, Math.PI*0.15, Math.PI*0.85); g.stroke();
+            g.beginPath(); g.arc(i*95 + off, h*1.15, 150, Math.PI*1.15, Math.PI*1.85); g.stroke();
+            g.beginPath(); g.arc(i*95 + 48 + off, -h*0.15, 150, Math.PI*0.15, Math.PI*0.85); g.stroke();
           });
         }
         var grad = g.createLinearGradient(0,0,0,h);
         grad.addColorStop(0,'rgba(255,255,255,.20)'); grad.addColorStop(1,'rgba(120,100,70,.10)');
         g.fillStyle = grad; g.fillRect(0,0,w,h);
-      }, 5, 1);
+      }, 7, 1);
       var skyTex = canvasTex(1024, 512, function(g, w, h){
         var grad = g.createLinearGradient(0,0,0,h);
         grad.addColorStop(0,'#7fa8c8'); grad.addColorStop(.55,'#b8cfdf'); grad.addColorStop(1,'#f2e3c2');
@@ -273,9 +300,9 @@ export function startGallery(projects: Project[]): GalleryApi {
         }
       });
       function archArtTexture(img){
-        var c = document.createElement('canvas'); c.width = 512; c.height = 720;
+        var c = document.createElement('canvas'); c.width = 768; c.height = 1080;
         var g = c.getContext('2d');
-        var w = 512, h = 720, r = w/2;
+        var w = 768, h = 1080, r = w/2;
         g.beginPath();
         g.moveTo(6, h); g.lineTo(6, r); g.arc(r, r, r-6, Math.PI, 0); g.lineTo(w-6, h); g.closePath();
         g.clip();
@@ -283,6 +310,7 @@ export function startGallery(projects: Project[]): GalleryApi {
         g.drawImage(img, (w - iw*s)/2, (h - ih*s)/2, iw*s, ih*s);
         var t = new THREE.CanvasTexture(c);
         t.colorSpace = THREE.SRGBColorSpace;
+        t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
         return t;
       }
       function dotSprite(){
@@ -298,6 +326,7 @@ export function startGallery(projects: Project[]): GalleryApi {
       function loadArt(path){
         var t = texLoader.load(path);
         t.colorSpace = THREE.SRGBColorSpace;
+        t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
         return t;
       }
 
