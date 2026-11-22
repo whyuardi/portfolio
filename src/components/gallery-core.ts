@@ -50,6 +50,8 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       var hallEnterBtn = document.getElementById('hallEnterBtn');
       var hallEnterLabel = document.getElementById('hallEnterLabel');
       var detailObserver = null;
+      /* Round 13: auto-fade timer for the big room title (see showRoomUI). */
+      var titleFadeTimer = 0;
 
       function byId(id){ for (var i = 0; i < PROJECTS.length; i++) if (PROJECTS[i].id === id) return PROJECTS[i]; return null; }
 
@@ -573,30 +575,34 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
               var h = o.userData.hit;
               if (h && (h.type + ':' + h.id) === key) applyGlow(o);
             });
-            /* Round 12: the ring is sized from the single mesh
-               actually under the pointer (hoverObj), NOT from every
-               object sharing the room's hit key. Round 11 unioned
-               all 'detail' objects of the room (3 paintings +
-               sculpture + plinth) into one Box3 — up to ~11 units
-               wide — so the ring was a giant room-spanning circle
-               centred on the room, never on the hovered painting,
-               and a hovered sculpture showed no ring anywhere near
-               itself. The band is also narrower/dimmer now (peak
-               0.55 at 0.86 radius) and the sprite smaller
-               (maxDim x 1.35, capped 6.5), so the painting stays
-               readable under the hover. */
-            if (hoverObj){
-              var box = new THREE.Box3().expandByObject(hoverObj);
-              var c = box.getCenter(new THREE.Vector3());
-              var s = box.getSize(new THREE.Vector3());
-              var m = Math.max(s.x, s.y, s.z);
-              glowSprite.position.copy(c);
-              glowSprite.scale.setScalar(Math.min(6.5, Math.max(2.0, m * 1.35)));
-              glowSprite.material.opacity = 0.5;
-            }
           } else {
             glowSprite.material.opacity = 0;
+            glowObj = null;
           }
+        }
+        /* Round 13: the ring follows the MESH under the pointer
+           (hoverObj), repositioned the moment it changes — NOT when
+           the hover key changes. The key is per-room
+           ('detail:gemfund'), so moving between the paintings,
+           plinth and sculpture of one room never changed the key
+           and the ring stayed frozen on the first mesh hovered in
+           that room; it only moved when the pointer crossed a
+           non-clickable gap (key -> null -> key again). That is the
+           multi-second "glide lag" of the round 12 check: the
+           tooltip (updated on every call, below) moved instantly
+           while the ring sat on the old object. There is no
+           position lerp anywhere in the code — the ring snaps.
+           (Sizing stays round 12: single-mesh Box3, maxDim x 1.35,
+           capped 6.5, opacity 0.5.) */
+        if (hit && hoverObj && hoverObj !== glowObj){
+          glowObj = hoverObj;
+          var box = new THREE.Box3().expandByObject(hoverObj);
+          var c = box.getCenter(new THREE.Vector3());
+          var s = box.getSize(new THREE.Vector3());
+          var m = Math.max(s.x, s.y, s.z);
+          glowSprite.position.copy(c);
+          glowSprite.scale.setScalar(Math.min(6.5, Math.max(2.0, m * 1.35)));
+          glowSprite.material.opacity = 0.5;
         }
         if (tip){
           if (hit){
@@ -857,6 +863,7 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       var roomYaw = 0, roomPitch = 0, tRoomYaw = 0, tRoomPitch = 0;
       var camPos = new THREE.Vector3(0, 1.6, 3.6), camTarget = new THREE.Vector3();
       var transit = null;
+      var flightTarget = null;   // room id the in-flight move is heading for (round 13)
       var lastInteract = performance.now();
       var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
       var mouseX = 0, mouseY = 0, parX = 0, parY = 0;
@@ -897,7 +904,13 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       function goRoom(id, fromTour){
         var p = byId(id), r = rooms[id];
         if (!p || !r) return false;
-        if (mode === 'room' && currentRoom === id) return true;
+        if (mode === 'room' && currentRoom === id){
+          /* Round 13: clicking the current room's dot re-centres the
+             view after a drag-look — the old early return left a
+             dragged yaw in place until a reload. */
+          tRoomYaw = 0; tRoomPitch = 0;
+          return true;
+        }
         /* Round 10: a flight already in progress no longer swallows the
            request — the old `mode === 'transit'` early-return silently
            dropped every dot/keyboard/arch click made mid-flight, so the
@@ -908,28 +921,45 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         closeMenu();
         closeDetail();
         hideHallBar();
-        /* Room chrome + location, round 11: for a manual move (dot,
-           keyboard, arch, swipe) the destination is reported the
-           moment it is chosen — the dot nav label used to lag one
-           stop behind for the whole flight (round 9). For a
-           tour-driven move the same instant update would put the UI
-           1.9–2.4 s ahead of the camera at every stop (the desync
-           seen in the round 10 check), so the tour reports the room
-           only when the camera actually lands (see arrived). */
+        /* Room chrome + location, round 13: the label names the
+           DESTINATION, so it flips the moment a flight starts — for
+           the tour too, not only for manual moves. Round 11 split
+           the two (manual = instant, tour = on arrival) because the
+           round 10 check read an ahead-of-camera label as desync;
+           the round 12 check proved the opposite is worse — during
+           a tour flight the pill/title lag one whole stop behind
+           (camera in Siaprak, pill still Aula), and a manual label
+           is already instant, so the same flight shows the new room
+           while the camera is still in the hall. One rule for both:
+           the pill + title change when the target is chosen. */
         var showRoomUI = function(){
           roomTitleText.textContent = p.world;
           roomTitle.classList.add('show');
+          /* Round 13: the title is a destination announcement, not a
+             permanent overlay — it used to sit over the centre
+             painting for the whole stay in the room. It now fades
+             out ~3.2 s after the flight starts (≈1 s after a 1.9 s
+             entry flight lands, ≈0.8 s after a 2.4 s room-to-room
+             flight), so the painting and plinth are clear to look
+             at. The timer restarts on every retarget. */
+          if (titleFadeTimer) clearTimeout(titleFadeTimer);
+          titleFadeTimer = setTimeout(function(){ roomTitle.classList.remove('show'); }, 3200);
           enterLabel.textContent = 'Jelajahi ' + p.name;
           actionBar.classList.add('show');
           backBtn.classList.add('show');
           hint.classList.add('hide');
           notifyLocation(id);
         };
-        if (!fromTour) showRoomUI();
+        showRoomUI();
         var arrived = function(){
-          mode = 'room'; currentRoom = id;
+          mode = 'room'; currentRoom = id; flightTarget = null;
           tRoomYaw = 0; tRoomPitch = 0; roomYaw = 0; roomPitch = 0;
-          if (fromTour) showRoomUI(); else notifyLocation(id);
+          /* Round 13: the UI already flipped to this room when the
+             flight started (see showRoomUI above) — arrival only
+             re-asserts the location. It must NOT re-show the title:
+             that would restart the fade timer and cover the painting
+             again after landing. */
+          notifyLocation(id);
           /* Round 12: the dwell is NO LONGER armed here. Arming in
              the arrival callback made the whole tour depend on this
              one callback firing — if it is ever lost (retarget,
@@ -938,6 +968,10 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
              the first frame the camera is standing in a room. */
           if (tour) tourEvent('arrived:' + id);
         };
+        /* Round 13: remember where this flight is heading — nextRoom()
+           (swipe/arrows) steps from the destination, not from the
+           room we left. */
+        flightTarget = id;
         if (currentRoom){
           /* room-to-room (or retargeted mid-flight between rooms): swing
              through the hall on a path offset to the side of the centre
@@ -966,18 +1000,45 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         /* Round 10: also allowed mid-flight between rooms (retargets,
            like goRoom) — arrows pressed during a flight used to fall
            through to a no-op yaw nudge. */
-        if (!currentRoom) return;
+        /* Round 13: step from the room the camera is HEADING for.
+           currentRoom is null during a hall→room flight and still the
+           departed room during a room→room flight, so a flick
+           mid-flight was swallowed outright (hall case) or stepped
+           from the wrong room. */
+        var base = flightTarget || currentRoom;
+        if (!base) return;
         if (mode !== 'room' && mode !== 'transit') return;
         var order = PROJECTS.map(function(p){ return p.id; });
-        var i = order.indexOf(currentRoom);
+        var i = order.indexOf(base);
         if (i < 0) return;
         goRoom(order[(i + dir + order.length) % order.length]);
+      }
+      function angDiff(a, b){ var d = a - b; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; return d; }
+      /* Round 13: snap the hall view to the next doorway in the flick
+         direction, measured from where the user started looking
+         (downYaw) so the drag itself cannot overshoot the choice.
+         The hall enter bar then offers that room. Arch angles rise
+         with PROJECTS order (-0.95 / 0 / 0.95), and a leftward flick
+         already yaws the view toward rising angles, so dir matches
+         nextRoom's convention (sx < 0 -> +1). */
+      function faceNextArch(dir){
+        var best = 0, bestD = Infinity;
+        PROJECTS.forEach(function(p, i){
+          var d = Math.abs(angDiff(p.angle, downYaw));
+          if (d < bestD){ bestD = d; best = i; }
+        });
+        var nxt = PROJECTS[(best + dir + PROJECTS.length) % PROJECTS.length];
+        targetYaw = nxt.angle;
+        lastInteract = performance.now();
       }
       function leaveRoom(fromTour){
         /* Also allow aborting an in-flight entry: the back button is already
            visible during the 1.9s entry flight, so a click then was silently
            swallowed by the old room-only guard. flyTo() replaces the pending
            transit (its done never fires), so aborting mid-flight is safe. */
+        /* Round 13: clicking the Aula dot while already in the hall
+           re-centres the view after a drag-look. */
+        if (mode === 'hall'){ yaw = targetYaw = 0.12; pitch = targetPitch = -0.06; return; }
         if (mode !== 'room' && mode !== 'transit') return;
         /* Return to the canonical hall framing: yaw/pitch are whatever the
            user left them at before entering (e.g. pitched up at the
@@ -986,17 +1047,19 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         yaw = targetYaw = 0.12; pitch = targetPitch = -0.06;
         var v = hallView();
         roomTitle.classList.remove('show');
+        if (titleFadeTimer){ clearTimeout(titleFadeTimer); titleFadeTimer = 0; }
+        flightTarget = null;
         actionBar.classList.remove('show');
         backBtn.classList.remove('show');
         hideHallBar();
-        /* Round 9: same instant-location rule as goRoom — the dot nav
-           must show Aula the moment the return starts, and leaving the
-           room by any route ends a running tour. Round 11: at the end
-           of a tour the label follows the same rule as the tour stops
-           and only flips to Aula when the camera lands back in the
-           hall (see the flight's done callback, below). */
+        /* Round 13: the label is the destination — Aula flips the
+           moment the return starts, for the tour too. The old
+           fromTour deferral left the last room's pill up for the
+           whole 1.7 s return flight; the done callback below still
+           re-asserts Aula on landing. Leaving the room by any route
+           ends a running tour. */
         if (tour) stopTour('leave');
-        if (!fromTour) notifyLocation(null);
+        notifyLocation(null);
         flyTo(v.pos, v.tgt, reduced ? 0.4 : 1.7, function(){ mode = 'hall'; currentRoom = null; notifyLocation(null); });
       }
 
@@ -1049,9 +1112,10 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
          dwell exactly instead of inferring it from screenshots.
          tourStep only advances when the move actually started; a
          swallowed call (flight in progress) retries shortly instead
-         of skipping a room. During the tour the label/title follow
-         the camera (they flip at arrival, not at departure), so the
-         UI can never run ahead of the camera mid-flight. */
+         of skipping a room. Round 13: the label/title flip at
+         departure, not at arrival — the pill names the stop the tour
+         is heading for, and the big title fades out on its own timer
+         so it never covers the painting after landing. */
       var tour = null;
       var tourLog = [];
       function tourEvent(ev){
@@ -1103,7 +1167,7 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       }
       /* ================= POINTER: drag-look + click ================= */
       var dragging = false, moved = 0, lastX = 0, lastY = 0;
-      var downX = 0, downY = 0, downT = 0;
+      var downX = 0, downY = 0, downT = 0, downYaw = 0.12;
       var raycaster = new THREE.Raycaster();
       var ndc = new THREE.Vector2();
       var el = renderer.domElement;
@@ -1116,6 +1180,7 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       /* The single mesh under the pointer (round 12): the halo ring
          is sized from this mesh alone — see updateHover. */
       var hoverObj = null;
+      var glowObj = null;   // mesh the halo ring is currently sized/positioned for (round 13)
       function raycastHover(){
         raycaster.setFromCamera(ndc, camera);
         var hits = raycaster.intersectObjects(clickables, false);
@@ -1135,7 +1200,7 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
            so a drag during the tour kept running to the next stop. */
         if (tour) stopTour('pointer');
         dragging = true; moved = 0; lastX = e.clientX; lastY = e.clientY;
-        downX = e.clientX; downY = e.clientY; downT = performance.now();
+        downX = e.clientX; downY = e.clientY; downT = performance.now(); downYaw = targetYaw;
         if (tip) tip.classList.remove('show');
         el.setPointerCapture(e.pointerId);
       });
@@ -1174,16 +1239,36 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
              11 dropped every flick made during the 2.4 s
              room-to-room flight (mode === 'transit'), so a quick
              flick-flick-flick sequence only ever landed the first
-             one — matching the 1-in-4 live result. nextRoom()
-             already retargets mid-flight, so a swipe during transit
-             just retargets the flight. Clicks (below) are still
-             blocked during transit. */
-          if (mode === 'room' || mode === 'transit'){
-            var dt = performance.now() - downT;
-            var sx = e.clientX - downX, sy = e.clientY - downY;
-            if (dt < 400 && Math.abs(sx) > 100 && Math.abs(sx) > Math.abs(sy) * 2.0 && Math.abs(sy) < 90){
+             one — matching the 1-in-4 live result. Clicks (below)
+             are still blocked during transit.
+             Round 13: the r12 ordering is VERIFIED in the code
+             (this branch runs before the transit guard below), but
+             the swipe's action — nextRoom() — stepped from
+             currentRoom, which is null during a hall→room flight
+             and still the departed room during a room→room flight.
+             A mid-flight flick was therefore swallowed outright
+             (hall case: the round 12 checker's
+             click-Siaprak-then-flick test) or stepped from the
+             wrong room. nextRoom() now steps from flightTarget
+             (the destination). The 400 ms threshold is kept: the
+             checker's drags held the button ~2.8 s, which no real
+             finger flick does. */
+          var dt = performance.now() - downT;
+          var sx = e.clientX - downX, sy = e.clientY - downY;
+          if (dt < 400 && Math.abs(sx) > 100 && Math.abs(sx) > Math.abs(sy) * 2.0 && Math.abs(sy) < 90){
+            if (mode === 'room' || mode === 'transit'){
               stopTour('swipe');
               nextRoom(sx < 0 ? 1 : -1);
+            } else if (mode === 'hall'){
+              /* Round 13: a flick in the hall used to do nothing
+                 navigational — drag-look is the hall's gesture, so
+                 this branch never ran here (round 12 check: Aula
+                 0/5). A fast flick now snaps the view to the next
+                 doorway in the flick direction; slow drags still
+                 look around freely, and no room is entered by
+                 surprise. */
+              stopTour('swipe');
+              faceNextArch(sx < 0 ? 1 : -1);
             }
           }
           return;
@@ -1353,6 +1438,7 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
           nudgeYaw: function(d){ targetYaw += d; lastInteract = performance.now(); },
           dispose: function(){
             stopTour();
+            if (titleFadeTimer) clearTimeout(titleFadeTimer);
             disposed = true;
             if (rafId) cancelAnimationFrame(rafId);
             try { renderer.dispose(); } catch (e) { /* noop */ }
@@ -1364,11 +1450,11 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
 
   /* initial location for the dot nav: the hall */
   if (opts && opts.onLocation) opts.onLocation(null);
-  /* Build marker (round 12): lets a visual check confirm which build is
+  /* Build marker (round 13): lets a visual check confirm which build is
      actually loaded, so a stale-cache check can never again be mistaken
      for a failed fix. */
-  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r12';
+  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r13';
   var sceneEl = document.getElementById('scene');
-  if (sceneEl) sceneEl.dataset.build = 'r12';
+  if (sceneEl) sceneEl.dataset.build = 'r13';
   return gl;
 }
