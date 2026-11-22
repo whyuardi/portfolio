@@ -1365,6 +1365,27 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
          flights still use 58 / 60.5. */
       var hallFov = 64, tHallFov = 64;
       var fovCur = 64;
+      /* Round 28: record the LOAD camera state in the DOM, same
+         pattern as data-landing-fov (r25) — a lag-proof, DOM-readable
+         proof of what the load frame actually was, so a check never
+         has to estimate the ceiling band from a screenshot again.
+         Round 27 diagnosis: the load camera and the post-tour landing
+         camera are IDENTICAL in code (yaw 0, pitch -0.04, camPos
+         (0,1.6,4.2), FOV 64 — see leaveRoom's snap below); the
+         checker's "load close" readings in r24–r26 (ceiling ~0%,
+         floor ~45%) are a screenshot-estimation artifact — they would
+         need FOV 40–44 + pitch -0.08..-0.10, impossible in code (FOV
+         is clamped 48..68, and no pitch writer reaches -0.10 at
+         load; the ceiling cream 0xece4d2 is nearly the fog/background
+         0xefe9db, so the ceiling/wall boundary is hard to read from
+         a screenshot). Do NOT "fix" the load framing on the strength
+         of that reading. Written once at init, never per frame. */
+      var loadSceneEl = document.getElementById('scene');
+      if (loadSceneEl) {
+        loadSceneEl.dataset.loadFov = String(Math.round(fovCur));
+        loadSceneEl.dataset.loadPitch = String(pitch);
+        loadSceneEl.dataset.loadYaw = String(yaw);
+      }
 
       function notifyLocation(loc){
         if (opts && opts.onLocation) opts.onLocation(loc);
@@ -1728,7 +1749,14 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
              landing — the flight itself converges on 64 (see the
              FOV block in animate), so at real frame rates this snap
              is ~0; at checker frame rates it is the guarantee that
-             the landing frame reads the default, not ~58.7 deg. */
+             the landing frame reads the default, not ~58.7 deg.
+             Round 28: this landing frame and the load frame use
+             IDENTICAL camera values (yaw 0, pitch -0.04, (0,1.6,4.2),
+             FOV 64 — see the load-state note at the camera init);
+             the r24–r26 checker "load close" readings were a
+             screenshot artifact, not a framing difference.
+             data-load-fov / data-load-pitch / data-load-yaw (written
+             at init) are the DOM proof. */
           fovCur = 64; camera.fov = 64; camera.updateProjectionMatrix();
           /* Round 25: record the landing FOV in the DOM (see the
              long note above) — a lag-proof, DOM-readable proof of
@@ -2416,8 +2444,8 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
   /* Build marker (round 13): lets a visual check confirm which build is
      actually loaded, so a stale-cache check can never again be mistaken
      for a failed fix. */
-  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r26';
+  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r28';
   var sceneEl = document.getElementById('scene');
-  if (sceneEl) sceneEl.dataset.build = 'r26';
+  if (sceneEl) sceneEl.dataset.build = 'r28';
   return gl;
 }
