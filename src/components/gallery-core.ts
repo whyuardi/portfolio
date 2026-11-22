@@ -204,8 +204,13 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
          4x MSAA + mipmaps, so the crystal costs a second full render
          every frame. Capping the ratio cuts the pixel load of BOTH
          passes ~1.8x; the scene is small enough that 1.5 is visually
-         near-identical on ordinary displays. */
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+         near-identical on ordinary displays.
+         Round 20: 1.5 -> 1.25. The r19 check measured Gemfund at
+         ~18-19 s/frame (r17: ~14.6) with bloom + DOF + transmission
+         + shadow 2048 running together; 1.25 cuts every pass's pixel
+         load a further ~31% (1.5^2 vs 1.25^2). The scene is large
+         soft shapes, so 1.25 stays visually near-identical. */
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
       renderer.setSize(window.innerWidth, window.innerHeight);
       renderer.shadowMap.enabled = true;
       renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -236,7 +241,8 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
          see animate) -> one cheap grade pass (warm grade + vignette
          + grain) -> OutputPass (tone mapping + sRGB, must be last;
          without it the composer would skip the renderer's ACES).
-         MSAA 4x on the composer targets: the renderer's antialias
+         MSAA 4x on the composer targets (round 20: 2x — see the
+         composer block below): the renderer's antialias
          only applies to the default framebuffer, so without this
          every edge would go jaggy the moment the composer is used.
          The samples are set before the first render, when the GL
@@ -267,22 +273,43 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         ].join('\n')
       };
       var composer = new EffectComposer(renderer);
-      composer.renderTarget1.samples = 4;
-      composer.renderTarget2.samples = 4;
+      /* Round 20: samples 4 -> 2. The r19 check praised the smooth
+         edges, but 4x MSAA on both HalfFloat composer targets is one
+         of the heaviest fill costs in Gemfund (transmission + bloom
+         + MSAA resolve together). 2x keeps edges clean on this
+         scene's large soft shapes — the grade pass and DOF soften
+         them further — at roughly half the resolve cost. Revert
+         candidate if the visual check finds jaggies. */
+      composer.renderTarget1.samples = 2;
+      composer.renderTarget2.samples = 2;
       composer.addPass(new RenderPass(scene, camera));
-      /* Bloom: threshold 0.9 / strength 0.3 / radius 0.5 — in linear
-         HDR only the skylight, gold glints and crystal speculars
-         clear 0.9, so the palette is never washed; strength halves
-         while the crystal is on screen (see animate). */
-      var bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.3, 0.5, 0.9);
+      /* Bloom, round 20 — DIAGNOSIS (Node probe, three r170's exact
+         punctual-light formulas): the r19 threshold 0.9 was BELOW
+         the linear-HDR radiance of the white statues' lit faces.
+         Under the room rig (spot 40 + point 30 + sun 1.6 + hemi
+         1.05) the robe's shoulder/top reads lum ~2.26 and the
+         monolith's top edge ~2.54 — the whole top of each statue is
+         a bloom source, and the blur bleeds down over the folds
+         (0.39), the stamp and the gold cells (0.23), flattening
+         them into a white blob; the approval sheet reads 1.17 and
+         the paintings' bright areas 0.93, so both hazed too. The
+         crystal/knot were safe (dark green/dark stone, below
+         threshold). Fix, layered: threshold 0.9 -> 1.15 (paintings
+         and the sheet fall below it entirely once the lights are
+         trimmed, see below), strength 0.3 -> 0.15 (halved wash even
+         where the tops still clear it), radius 0.5 -> 0.35
+         (tighter bloom, less spread over folds/cells). The tops
+         still bloom a little — small bright caps reading as light
+         catching the top edge, not a whole-statue whiteout. */
+      var bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.15, 0.35, 1.15);
       composer.addPass(bloomPass);
       /* DOF: BokehPass. focus is re-aimed every frame at the
-         camera-to-target distance. aperture 0.0015 / maxblur 0.006:
-         the shader blurs by clamp((focus - depth) * aperture), so
-         with our metre-scale depths the back wall (~4 m behind the
-         statue) just reaches full blur while the statue itself
-         stays sharp. Gated off while the crystal is on screen. */
-      var bokehPass = new BokehPass(scene, camera, { focus: 4.6, aperture: 0.0015, maxblur: 0.006 });
+         camera-to-target distance. Round 20: maxblur 0.006 -> 0.003
+         and aperture 0.0015 -> 0.0012. At maxblur 0.006 the back
+         wall (~4 m behind the statue) hit FULL blur, and on top of
+         the bloom haze the paintings dissolved into fog; 0.003 keeps
+         them soft but readable while the statue stays sharp. */
+      var bokehPass = new BokehPass(scene, camera, { focus: 4.6, aperture: 0.0012, maxblur: 0.003 });
       composer.addPass(bokehPass);
       var gradePass = new ShaderPass(GradeShader);
       composer.addPass(gradePass);
@@ -601,7 +628,16 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         woodFloor: new THREE.MeshStandardMaterial({ map: woodTex, roughness:.75 }),
         woodFloorRoom: new THREE.MeshStandardMaterial({ map: woodTexRoom, roughness:.75 }),
         stone: new THREE.MeshStandardMaterial({ color:0x9a958a, roughness:.9 }),
-        plinth: new THREE.MeshStandardMaterial({ color:0x55534e, roughness:.85 }),
+        /* Round 20: 0x55534e -> 0xc4beb0 (pale stone). The probe
+           measured the old plinth at linear lum 0.05 — the material
+           itself is near-charcoal, so the room plinths read dark
+           grey while the hall plinth (MAT.stone, lum 0.36) reads
+           pale. The r19 check's "plinth putih batu di r17" was the
+           light stone cap; the base/column were always this dark.
+           Pale stone restores the white-stone read without touching
+           the hall plinth (still MAT.stone). Used only by the room
+           plinth base + column. */
+        plinth: new THREE.MeshStandardMaterial({ color:0xc4beb0, roughness:.85 }),
         paper: new THREE.MeshStandardMaterial({ color:0xf6f1e3, roughness:.9 })
       };
 
@@ -610,7 +646,21 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
          materials (e.g. MAT.stone on the hall plinth and the Rolling slab),
          and the hover glow below writes to the material — without the clone
          a hovered sculpture would light the hall plinth too. */
-      function markClickable(obj, data){ obj.traverse(function(o){ if (o.isMesh){ o.userData.hit = data; if (o.material && !o.userData._matCloned){ o.material = o.material.clone(); o.userData._matCloned = true; } clickables.push(o); } }); }
+      function markClickable(obj, data){ obj.traverse(function(o){ if (o.isMesh){ o.userData.hit = data; if (o.material && !o.userData._matCloned){ o.material = o.material.clone(); o.userData._matCloned = true;
+          /* Round 20: register TRANSMISSIVE CLONES for the gate.
+             buildSculpture registers the original gem material, but
+             this clone step replaces every rendered mesh's material
+             with a fresh copy — the r16 gate was toggling an orphan
+             material while the rendered crystals kept transmission 1
+             (proven by Node probe: gate set 0, rendered meshes still
+             1). So the transmission pass ran every frame in every
+             room and the hall, together with Bokeh in Siaprak/Rolling
+             — the "two heavy passes never run together" claim of r18
+             was false. The clones are what the renderer sees, so
+             they are what the gate must toggle. Guarded: gemMats is
+             declared later in source order (var hoisting) but
+             assigned before the first markClickable call. */
+          if (o.material.transmission !== undefined && o.material.transmission > 0 && typeof gemMats !== 'undefined' && gemMats) gemMats.push(o.material); } clickables.push(o); } }); }
 
       /* ---- hover: tooltip + subtle glow on the hovered group ---- */
       var hoverKey = null;
@@ -623,6 +673,13 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       function applyGlow(o){
         var m = o.material;
         if (!m) return;
+        /* Round 20: never add emissive to a transmissive material.
+           The r19 check found hovering the crystal bleached the
+           emerald pale/white — the amber emissive (0x6b4423 @ 0.5)
+           is added straight into the transmission shader's output,
+           on top of the transmitted green. The halo ring alone
+           marks the crystal; the emissive adds nothing but wash. */
+        if (m.transmission !== undefined && m.transmission > 0) return;
         if (m.emissive){
           if (o.userData._emOrig === undefined) o.userData._emOrig = m.emissive.getHex();
           if (o.userData._emIntOrig === undefined) o.userData._emIntOrig = (m.emissiveIntensity === undefined ? 1 : m.emissiveIntensity);
@@ -1027,8 +1084,12 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
             flatShading:true, envMap: scene.environment, envMapIntensity:1.5 });
           /* Round 16: registered for the transmission gate in animate
              — the main crystal and its miniature each build their own
-             material, so both land here. */
-          gemMats.push(gemMat);
+             material, so both land here. Round 20: the ORIGINAL is
+             no longer registered — markClickable clones every rendered
+             mesh's material, so the gate must toggle the clones (it
+             registers them at clone time); the originals are orphans
+             and toggling them did nothing (see markClickable). */
+          /* gemMats.push(gemMat); — REMOVED round 20, see above. */
           var gemGrp = new THREE.Group();
           var pavilion = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.03, 0.46, 8, 1), gemMat);
           pavilion.position.y = -0.23; pavilion.castShadow = true; gemGrp.add(pavilion);
@@ -1156,12 +1217,20 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         var skylight = new THREE.Mesh(new THREE.PlaneGeometry(4.6, 1.6),
           new THREE.MeshBasicMaterial({ color:0xfdf6df }));
         skylight.rotation.x = Math.PI/2; skylight.position.set(0, RH - 0.02, -0.6); room.add(skylight);
-        var rLight = new THREE.PointLight(0xfff2da, 30, 16, 1.4);
+        var rLight = new THREE.PointLight(0xfff2da, 22, 16, 1.4);
         rLight.position.set(0, 4.2, 0.5); room.add(rLight);
         /* Round 14: warm spotlight straight down onto the sculpture —
            the museum pool of light. No shadow map (the sun + contact
-           discs carry grounding); penumbra keeps the edge soft. */
-        var spot = new THREE.SpotLight(0xffe2b0, 40, 14, 0.55, 0.65, 1.6);
+           discs carry grounding); penumbra keeps the edge soft.
+           Round 20: spot 40 -> 28 and rLight 30 -> 22. Same probe as
+           the bloom fix: the two room lights are the dominant terms
+           on the statue tops (robe shoulder 2.26, monolith top 2.54
+           linear lum at the old values). Trimming them ~30% drops
+           the tops to ~1.8-2.05, the approval sheet 1.17 -> 0.99
+           and the paintings 0.93 -> 0.75 — below the new 1.15
+           bloom threshold — while hemi + sun stay untouched, so the
+           rooms keep their bright warm read. */
+        var spot = new THREE.SpotLight(0xffe2b0, 28, 14, 0.55, 0.65, 1.6);
         spot.position.set(0, 4.7, 0.4);
         spot.target.position.set(0, 0.7, -0.4);
         room.add(spot); room.add(spot.target);
@@ -1462,6 +1531,20 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
            oculus), so without a reset the statue can be out of frame
            entirely on return. */
         yaw = targetYaw = 0.12; pitch = targetPitch = -0.06;
+        /* Round 20: the r19 check's return landing differed from the
+           initial hall view (floor ~45% vs ~40%, ceiling invisible,
+           2 of 3 doors). The landing framing is otherwise identical
+           — hallView() is canonical — so the drift came from state
+           the return flight did not reset: a hall wheel-zoom
+           (hallFov/tHallFov) left over from before entering, a
+           residual hall fling (yawVel/pitchVel) that kept yawing
+           after landing, and a stale lastInteract that let the idle
+           slow-pan start the instant the flight ended. All three are
+           reset here. The ~8 s return flight itself is unchanged
+           (wall-clock 1.7 s; the longer reading is most likely the
+           checker's slow frame sampling — its DOM clicks took ~42 s
+           to be acknowledged in the same run). */
+        hallFov = tHallFov = 58; yawVel = 0; pitchVel = 0; lastInteract = performance.now();
         var v = hallView();
         roomTitle.classList.remove('show');
         if (titleFadeTimer){ clearTimeout(titleFadeTimer); titleFadeTimer = 0; }
@@ -1740,10 +1823,20 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         if (menuSheet.classList.contains('open') || detailSheet.classList.contains('open')) return;
         e.preventDefault();
         lastInteract = performance.now();
+        /* Round 20: normalise deltaY by deltaMode. The handler
+           assumed pixel units, but a wheel event can arrive in lines
+           (deltaMode 1, deltaY ~3) or pages (deltaMode 2, deltaY ~1)
+           — the checker's "3 pages" of scroll moved the dolly by
+           0.0012 x 3, i.e. nothing. Lines count ~40 px, a page a
+           full viewport. Honest caveat: the visual checker's scroll
+           may still not deliver a real wheel event to the canvas at
+           all, so this is proven in code only until a real mouse
+           wheel is tried. */
+        var dy = e.deltaY * (e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? window.innerHeight : 1);
         if (mode === 'room'){
-          tDolly = THREE.MathUtils.clamp(tDolly - e.deltaY * 0.0012, 0, 1.7);
+          tDolly = THREE.MathUtils.clamp(tDolly - dy * 0.0012, 0, 1.7);
         } else if (mode === 'hall'){
-          tHallFov = THREE.MathUtils.clamp(tHallFov + e.deltaY * 0.008, 48, 68);
+          tHallFov = THREE.MathUtils.clamp(tHallFov + dy * 0.008, 48, 68);
         }
       }, { passive: false });
 
@@ -1903,14 +1996,20 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
           /* Round 16: gate the transmission pass on the crystal
              actually being on screen. Three r170 has no
              transmissionResolutionScale — a transmissive material
-             costs a second full-viewport render (MSAA 4x + mipmaps)
+             costs a second full-viewport render (MSAA + mipmaps)
              every frame it is in the scene, even when the camera is
              in another room or the hall. With transmission 0 the
              crystal drops to the opaque list and the pass is skipped
              entirely; it is only ever 0 while the crystal cannot be
              seen (flights in/out and the hall arch view keep it on
              via flightTarget / hallBest). The program flip costs one
-             recompile per visit, not per frame. */
+             recompile per visit, not per frame.
+             Round 20: this gate was DEAD from r16 to r19 — it
+             toggled the original gem material while markClickable
+             had replaced every rendered mesh's material with a clone
+             (probe: gate set 0, rendered meshes still 1). The clones
+             are now registered in gemMats at clone time, so the gate
+             finally does what this comment always claimed. */
           var gemOn = (currentRoom === 'gemfund') || (flightTarget === 'gemfund')
             || (mode === 'hall' && hallBest && hallBest.id === 'gemfund');
           if (gemOn !== gemTransmissionOn){
@@ -1928,7 +2027,7 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
           var bokehOn = !gemOn && !reduced;
           bokehPass.enabled = bokehOn;
           if (bokehOn) bokehPass.uniforms['focus'].value = camera.position.distanceTo(camTarget);
-          bloomPass.strength = gemOn ? 0.15 : 0.3;
+          bloomPass.strength = gemOn ? 0.08 : 0.15;
           gradePass.uniforms['uTime'].value = t;
           composer.render();
         } catch(err){
@@ -1983,8 +2082,8 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
   /* Build marker (round 13): lets a visual check confirm which build is
      actually loaded, so a stale-cache check can never again be mistaken
      for a failed fix. */
-  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r19';
+  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r20';
   var sceneEl = document.getElementById('scene');
-  if (sceneEl) sceneEl.dataset.build = 'r19';
+  if (sceneEl) sceneEl.dataset.build = 'r20';
   return gl;
 }
