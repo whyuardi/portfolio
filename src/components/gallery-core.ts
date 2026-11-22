@@ -214,6 +214,19 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       renderer.setSize(window.innerWidth, window.innerHeight);
       renderer.shadowMap.enabled = true;
       renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      /* Round 21: shadow maps render ONCE, not every frame.
+         Diagnosis: with autoUpdate (the default) the sun's 2048
+         shadow map re-renders the whole scene every frame — a full
+         extra scene render on top of the transmission + main +
+         bloom passes. The scene is fully static for shadows: since
+         r18 nothing that casts moves (statues stand still, the knot
+         doesn't turn, dust doesn't cast, lights never move), so the
+         shadow map never changes after the first render.
+         needsUpdate = true renders it once at startup; autoUpdate
+         = false keeps it. Zero visual change, one full scene
+         render per frame saved in every room. */
+      renderer.shadowMap.autoUpdate = false;
+      renderer.shadowMap.needsUpdate = true;
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
       renderer.toneMappingExposure = 1.32;
       if ('outputColorSpace' in renderer) renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -223,7 +236,13 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       scene.background = new THREE.Color(0xefe9db);
       scene.fog = new THREE.Fog(0xefe9db, 26, 60);
 
-      var camera = new THREE.PerspectiveCamera(58, window.innerWidth/window.innerHeight, 0.1, 120);
+      /* Round 21: constructor FOV 58 -> 64 (hall default; animate
+         owns the live FOV after frame 1 — 58 in rooms, 60.5
+         mid-flight, hallFov in the hall — so the constructor value
+         only sets the very first frame, and it must match the hall
+         default or the first frame renders at 58 while fovCur
+         already says 64 and never self-corrects). */
+      var camera = new THREE.PerspectiveCamera(64, window.innerWidth/window.innerHeight, 0.1, 120);
       /* r19 HOTFIX: this whole composer block MUST stay AFTER scene/camera
          are created above. BokehPass reads camera.aspect in its constructor
          (three r170 BokehPass.js:56); in r18 the block sat before the
@@ -1312,9 +1331,9 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       /* ================= CAMERA RIG ================= */
       var mode = 'hall';           // 'hall' | 'room' | 'transit'
       var currentRoom = null;
-      var yaw = 0.12, pitch = -0.06, targetYaw = 0.12, targetPitch = -0.06;
+      var yaw = 0, pitch = -0.04, targetYaw = 0, targetPitch = -0.04;
       var roomYaw = 0, roomPitch = 0, tRoomYaw = 0, tRoomPitch = 0;
-      var camPos = new THREE.Vector3(0, 1.6, 3.6), camTarget = new THREE.Vector3();
+      var camPos = new THREE.Vector3(0, 1.6, 4.2), camTarget = new THREE.Vector3();
       var transit = null;
       var flightTarget = null;   // room id the in-flight move is heading for (round 13)
       var lastInteract = performance.now();
@@ -1329,8 +1348,11 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       var yawVel = 0, pitchVel = 0, roomYawVel = 0, roomPitchVel = 0;
       var lastMoveT = 0;
       var dolly = 0, tDolly = 0;
-      var hallFov = 58, tHallFov = 58;
-      var fovCur = 58;
+      /* Round 21: hall default FOV 58 -> 64 (see hallView). The
+         wheel range stays 48..68, so 64 sits inside it; rooms and
+         flights still use 58 / 60.5. */
+      var hallFov = 64, tHallFov = 64;
+      var fovCur = 64;
 
       function notifyLocation(loc){ if (opts && opts.onLocation) opts.onLocation(loc); }
       function notifyTour(t){ if (opts && opts.onTourChange) opts.onTourChange(t); }
@@ -1357,9 +1379,39 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
          5.7 deg up, so the knot centre was ~25 deg below view centre with
          a 29 deg half-FOV — its bottom fell off-frame. Now the knot centre
          is ~9 deg below view centre and the plinth base (~21 deg below)
-         clears the hint pill at the bottom edge. */
+         clears the hint pill at the bottom edge.
+         Round 21: the r19 "wide" framing (floor ~40%, ceiling ~13%,
+         3 doors) was lost in r20 — the check read the initial hall
+         view close/low (floor ~45%, no ceiling, 2 doors + Siaprak's
+         cut off) even though hallView() itself never changed; the
+         r19/r20 difference is viewport variance, so the fix must
+         make the framing robust at 16:9 instead of hoping the
+         checker viewport matches. Probe (node, real geometry:
+         doors at radius 8.94, angles ±0.95 rad, width 2.3; camera
+         z 3.6, FOV 58, yaw 0.12): the Siaprak door centre sits
+         46.5 deg off-axis against a 44.6 deg half-HFOV — its centre
+         is outside the frame, outer edge clipped 7.4 deg. That is
+         exactly the r20 check. The fix is three numbers together:
+         camera back to z 4.2, FOV 58 -> 64 (half-HFOV 48 deg at
+         16:9), and yaw 0.12 -> 0. The yaw change is the decisive
+         one — 0.12 turned the view toward the right door and pushed
+         the left door out; with yaw 0 the composition is symmetric
+         and both side doors sit 37.8 deg off-axis, outer edge
+         43.1 deg, i.e. fully inside with ~5 deg margin at 16:9
+         (at a narrow 1.42 aspect only 1.5 deg clips). With yaw
+         kept at 0.12 the left door would still clip 1.9 deg even
+         after the FOV/z fix. Pitch -0.06 -> -0.04. Projected
+         verticals (same probe): floor ~43%, ceiling band ~21%
+         (clearly visible now — the complaint was invisibility, not
+         the exact 13%), knot centre ~63% down frame, plinth base
+         ~79% (still clear of the hint pill). Side effect of yaw 0:
+         the initial view faces the centre (Gemfund) door dead-on,
+         so the hall enter bar shows on load — intended, it invites
+         entry. leaveRoom() and the initial vars above carry the
+         same numbers, so the return landing matches the initial
+         view. */
       function hallView(){
-        var base = new THREE.Vector3(0, 1.6, 3.6);
+        var base = new THREE.Vector3(0, 1.6, 4.2);
         var d = new THREE.Vector3(Math.sin(yaw)*Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw)*Math.cos(pitch));
         return { pos:base, tgt:d.multiplyScalar(10).add(base) };
       }
@@ -1524,13 +1576,13 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
            transit (its done never fires), so aborting mid-flight is safe. */
         /* Round 13: clicking the Aula dot while already in the hall
            re-centres the view after a drag-look. */
-        if (mode === 'hall'){ yaw = targetYaw = 0.12; pitch = targetPitch = -0.06; yawVel = 0; pitchVel = 0; return; }
+        if (mode === 'hall'){ yaw = targetYaw = 0; pitch = targetPitch = -0.04; yawVel = 0; pitchVel = 0; return; }
         if (mode !== 'room' && mode !== 'transit') return;
         /* Return to the canonical hall framing: yaw/pitch are whatever the
            user left them at before entering (e.g. pitched up at the
            oculus), so without a reset the statue can be out of frame
            entirely on return. */
-        yaw = targetYaw = 0.12; pitch = targetPitch = -0.06;
+        yaw = targetYaw = 0; pitch = targetPitch = -0.04;
         /* Round 20: the r19 check's return landing differed from the
            initial hall view (floor ~45% vs ~40%, ceiling invisible,
            2 of 3 doors). The landing framing is otherwise identical
@@ -1544,7 +1596,10 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
            (wall-clock 1.7 s; the longer reading is most likely the
            checker's slow frame sampling — its DOM clicks took ~42 s
            to be acknowledged in the same run). */
-        hallFov = tHallFov = 58; yawVel = 0; pitchVel = 0; lastInteract = performance.now();
+        /* Round 21: hallFov default is 64 now (see hallView) — the
+           reset must match it, or a return landing would snap the
+           lens back to the old narrow framing. */
+        hallFov = tHallFov = 64; yawVel = 0; pitchVel = 0; lastInteract = performance.now();
         var v = hallView();
         roomTitle.classList.remove('show');
         if (titleFadeTimer){ clearTimeout(titleFadeTimer); titleFadeTimer = 0; }
@@ -1667,7 +1722,7 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       }
       /* ================= POINTER: drag-look + click ================= */
       var dragging = false, moved = 0, lastX = 0, lastY = 0;
-      var downX = 0, downY = 0, downT = 0, downYaw = 0.12;
+      var downX = 0, downY = 0, downT = 0, downYaw = 0;
       var raycaster = new THREE.Raycaster();
       var ndc = new THREE.Vector2();
       var el = renderer.domElement;
@@ -1817,8 +1872,22 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
          short of the plinth, never through it). Hall: the camera
          cannot move without risking the knot, so the wheel zooms
          the lens instead (FOV 48..68). Ignored during flights and
-         while a sheet covers the canvas. */
-      el.addEventListener('wheel', function(e){
+         while a sheet covers the canvas.
+         Round 21: the listener moved OFF the canvas onto window
+         (capture). Diagnosis of the r20 check's "wheel does nothing
+         in Gemfund": the listener lived on renderer.domElement, so
+         it only fired for events whose target IS the canvas or a
+         child of it. The checker's room scroll was targeted at the
+         #scene div itself (its own note), and in a room the pointer
+         can also sit over sibling chrome (#actionBar, #backBtn,
+         #roomNav — all pointer-events:auto and NOT children of
+         #scene) — those events never reach the canvas listener.
+         A capture-phase window listener fires exactly once for
+         every wheel event anywhere on the page, whatever its
+         target, and the menu/detail guard still lets an open sheet
+         scroll normally (it returns before preventDefault).
+         Removed in dispose(). */
+      function onWheel(e){
         if (mode === 'transit') return;
         if (menuSheet.classList.contains('open') || detailSheet.classList.contains('open')) return;
         e.preventDefault();
@@ -1838,7 +1907,8 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         } else if (mode === 'hall'){
           tHallFov = THREE.MathUtils.clamp(tHallFov + dy * 0.008, 48, 68);
         }
-      }, { passive: false });
+      }
+      window.addEventListener('wheel', onWheel, { passive: false, capture: true });
 
       /* ================= LOOP ================= */
       var clock = new THREE.Clock();
@@ -2015,6 +2085,31 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
           if (gemOn !== gemTransmissionOn){
             gemTransmissionOn = gemOn;
             gemMats.forEach(function(m){ m.transmission = gemOn ? 1 : 0; m.needsUpdate = true; });
+            /* Round 21: dynamic resolution in Gemfund. Diagnosis of
+               the r20 "no measurable improvement" (Gemfund still
+               ~18.7 s/frame in the check tool): the transmission
+               pass is the frame cost, and its render target is
+               sized from the RENDERER's drawing buffer (three r170
+               renderTransmissionPass: setSize(activeViewport),
+               samples 4 hard-coded, HalfFloat + mipmaps) — the
+               composer's MSAA 2 and pixelRatio 1.25 never touched
+               it, so r20 only lightened the passes AROUND the
+               transmission render. Dropping the renderer (and
+               composer) pixel ratio to 1.0 while the crystal is on
+               screen cuts every pass's pixel count ~36%
+               (1.25^2 -> 1.0^2), transmission target included, and
+               restores 1.25 everywhere else. The crystal is large
+               soft shapes and the paintings are 768 px textures on
+               ~720 px planes at 1.0, so the visual cost is a slight
+               softening of Gemfund only; MSAA 2 on the composer
+               targets stays, so edges stay clean. Reallocates
+               render targets on room entry/exit only — one-frame
+               hitch, never per frame. */
+            var pr = gemOn ? 1.0 : 1.25;
+            renderer.setPixelRatio(pr);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setPixelRatio(pr);
+            composer.setSize(window.innerWidth, window.innerHeight);
           }
           /* Round 18: post-processing. The DOF is gated like the
              transmission pass — when the crystal is on screen the
@@ -2069,6 +2164,9 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
             if (titleFadeTimer) clearTimeout(titleFadeTimer);
             disposed = true;
             if (rafId) cancelAnimationFrame(rafId);
+            /* Round 21: the wheel listener lives on window (capture)
+               — remove it here or a remount would stack handlers. */
+            window.removeEventListener('wheel', onWheel, true);
             try { composer.dispose(); } catch (e) { /* noop */ }
             try { renderer.dispose(); } catch (e) { /* noop */ }
             if (renderer.domElement && renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
@@ -2082,8 +2180,8 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
   /* Build marker (round 13): lets a visual check confirm which build is
      actually loaded, so a stale-cache check can never again be mistaken
      for a failed fix. */
-  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r20';
+  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r21';
   var sceneEl = document.getElementById('scene');
-  if (sceneEl) sceneEl.dataset.build = 'r20';
+  if (sceneEl) sceneEl.dataset.build = 'r21';
   return gl;
 }
