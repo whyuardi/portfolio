@@ -214,6 +214,18 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       if ('outputColorSpace' in renderer) renderer.outputColorSpace = THREE.SRGBColorSpace;
       container.appendChild(renderer.domElement);
 
+      var scene = new THREE.Scene();
+      scene.background = new THREE.Color(0xefe9db);
+      scene.fog = new THREE.Fog(0xefe9db, 26, 60);
+
+      var camera = new THREE.PerspectiveCamera(58, window.innerWidth/window.innerHeight, 0.1, 120);
+      /* r19 HOTFIX: this whole composer block MUST stay AFTER scene/camera
+         are created above. BokehPass reads camera.aspect in its constructor
+         (three r170 BokehPass.js:56); in r18 the block sat before the
+         `var scene`/`var camera` declarations, so camera was undefined
+         (var hoisting) and initGallery() threw 'Cannot read properties of
+         undefined (reading \'aspect\')' — total blank gallery. Do not move
+         this block above the camera again. */
       /* ================= ROUND 18: POST-PROCESSING =================
          The r17 audit's gap #2: the gallery rendered raw (only ACES +
          antialias), everything sharp front to back, no focus
@@ -275,12 +287,6 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       var gradePass = new ShaderPass(GradeShader);
       composer.addPass(gradePass);
       composer.addPass(new OutputPass());
-
-      var scene = new THREE.Scene();
-      scene.background = new THREE.Color(0xefe9db);
-      scene.fog = new THREE.Fog(0xefe9db, 26, 60);
-
-      var camera = new THREE.PerspectiveCamera(58, window.innerWidth/window.innerHeight, 0.1, 120);
 
       /* Round 14: RoomEnvironment PMREM — the old "no env map" call
          left clearcoat/metal with nothing to reflect, which is why
@@ -1977,7 +1983,7 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
   /* Build marker (round 13): lets a visual check confirm which build is
      actually loaded, so a stale-cache check can never again be mistaken
      for a failed fix. */
-  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r18';
+  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r19';
   var sceneEl = document.getElementById('scene');
   if (sceneEl) sceneEl.dataset.build = 'r18';
   return gl;
