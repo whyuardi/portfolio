@@ -1985,6 +1985,6 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
      for a failed fix. */
   if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r19';
   var sceneEl = document.getElementById('scene');
-  if (sceneEl) sceneEl.dataset.build = 'r18';
+  if (sceneEl) sceneEl.dataset.build = 'r19';
   return gl;
 }
