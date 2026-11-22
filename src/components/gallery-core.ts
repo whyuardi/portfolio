@@ -3,6 +3,7 @@
 // and a dispose() was added for React unmount. No visual or behaviour changes.
 // @ts-nocheck
 import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import type { Project } from '../lib/projects';
 
 export type GalleryApi = {
@@ -205,9 +206,15 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
 
       var camera = new THREE.PerspectiveCamera(58, window.innerWidth/window.innerHeight, 0.1, 120);
 
-      /* No PMREM environment map: sampling it per fragment is very costly
-         under software WebGL, and it blocked first load. Hemisphere + key
-         lights carry the scene instead. */
+      /* Round 14: RoomEnvironment PMREM — the old "no env map" call
+         left clearcoat/metal with nothing to reflect, which is why
+         the Gemfund gem read as flat glowing plastic. PMREM
+         generation is a one-off at init; environmentIntensity is
+         kept low (0.35) so the warm palette is not washed out. */
+      var pmrem = new THREE.PMREMGenerator(renderer);
+      scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+      scene.environmentIntensity = 0.35;
+      pmrem.dispose();
 
       var hemi = new THREE.HemisphereLight(0xfff6e6, 0xcfc2ab, 1.05);
       scene.add(hemi);
@@ -643,6 +650,22 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       var oculusRing = new THREE.Mesh(new THREE.TorusGeometry(3.12, 0.07, 12, 72), MAT.woodDark);
       oculusRing.rotation.x = Math.PI/2; oculusRing.position.y = HALL_H + 0.06;
       hall.add(oculusRing);
+      /* Round 14: skylight grille (gobo) — a lattice of thin bars just
+         under the oculus. From below it reads as the skylight's grille;
+         the sun shining through it throws a geometric lattice shadow
+         across the hall floor, the Nagi-style daylight. Bars span the
+         oculus (r 3.1); sun at (4,12,2) throws the shadow ~1.8 units
+         toward -x/-z, landing around the centre plinth. */
+      var lattice = new THREE.Group();
+      var latticeMat = new THREE.MeshStandardMaterial({ color:0x6d4f30, roughness:.6, metalness:.3 });
+      for (var li = -4; li <= 4; li++){
+        var lbx = new THREE.Mesh(new THREE.BoxGeometry(6.0, 0.05, 0.09), latticeMat);
+        lbx.position.set(0, 0, li*0.6); lbx.castShadow = true; lattice.add(lbx);
+        var lbz = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.05, 6.0), latticeMat);
+        lbz.position.set(li*0.6, 0, 0); lbz.castShadow = true; lattice.add(lbz);
+      }
+      lattice.position.y = HALL_H + 0.12;
+      hall.add(lattice);
 
       /* center plinth + rotating stone knot */
       var plinth = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.95, 0.5, 40), MAT.stone);
@@ -716,6 +739,13 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
           new THREE.MeshStandardMaterial({ color:0xa68d64, roughness:.5, metalness:.25 }));
         frame.castShadow = true;
         grp.add(frame);
+        /* Round 14: gilt slip — a thin gold liner between frame and
+           canvas (museum framing). Front face sits just behind the
+           art plane, so only a 3 cm gold border shows around it. */
+        var liner = new THREE.Mesh(new THREE.BoxGeometry(w + 0.06, h + 0.06, 0.012),
+          new THREE.MeshStandardMaterial({ color:0xc9a227, roughness:.35, metalness:.6 }));
+        liner.position.z = 0.038;
+        grp.add(liner);
         if (crop){ tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(crop[0], crop[1]); tex.offset.set(crop[2], crop[3]); }
         var art = new THREE.Mesh(new THREE.PlaneGeometry(w, h),
           new THREE.MeshStandardMaterial({ map: tex, roughness:.85 }));
@@ -724,38 +754,140 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         return grp;
       }
 
+      /* Round 14: rounded box via a rounded-rect shape + extrude with
+         bevel. The shape is inset by the bevel size so the final dims
+         are exactly (w, h, d) with edges of radius r. */
+      function roundedBox(w, h, d, r){
+        var bt = Math.min(r, d * 0.45), bs = Math.min(r, d * 0.45);
+        var iw = w - bs*2, ih = h - bs*2;
+        var s = new THREE.Shape();
+        var x = -iw/2, y = -ih/2;
+        s.moveTo(x + bs, y);
+        s.lineTo(x + iw - bs, y); s.quadraticCurveTo(x + iw, y, x + iw, y + bs);
+        s.lineTo(x + iw, y + ih - bs); s.quadraticCurveTo(x + iw, y + ih, x + iw - bs, y + ih);
+        s.lineTo(x + bs, y + ih); s.quadraticCurveTo(x, y + ih, x, y + ih - bs);
+        s.lineTo(x, y + bs); s.quadraticCurveTo(x, y, x + bs, y);
+        var geo = new THREE.ExtrudeGeometry(s, { depth: Math.max(0.002, d - bt*2),
+          bevelEnabled: true, bevelThickness: bt, bevelSize: bs, bevelSegments: 3, curveSegments: 8 });
+        geo.center();
+        return geo;
+      }
+
+      /* Round 14: sculptures rebuilt in the Nagi language — exaggerated
+         round silhouettes, matte (roughness 0.6–0.9), flat 2–3 colour
+         palette per room, ONE dark accent, no faces. The hall stone
+         knot is untouched. Each sculpture keeps the same footprint so
+         the room camera/tour framing still works. */
       function buildSculpture(p){
         var grp = new THREE.Group();
         if (p.id === 'siaprak'){
-          for (var i = 0; i < 3; i++){
-            var sheet = new THREE.Mesh(new THREE.BoxGeometry(0.9 - i*0.1, 0.07, 1.2 - i*0.08), MAT.paper);
-            sheet.position.y = 0.1 + i*0.075; sheet.rotation.y = (i - 1) * 0.22;
-            sheet.castShadow = true; grp.add(sheet);
-          }
-          var stampBase = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.07, 0.34),
-            new THREE.MeshStandardMaterial({ color:0x8a6844, roughness:.6 }));
-          stampBase.position.set(0.12, 0.36, 0.1); stampBase.castShadow = true; grp.add(stampBase);
-          var stampTop = new THREE.Mesh(new THREE.SphereGeometry(0.085, 20, 16),
-            new THREE.MeshStandardMaterial({ color:0x6d4f30, roughness:.5 }));
-          stampTop.position.set(0.12, 0.47, 0.1); stampTop.castShadow = true; grp.add(stampTop);
-          var stampNeck = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.05, 0.1, 14),
-            new THREE.MeshStandardMaterial({ color:0x6d4f30, roughness:.5 }));
-          stampNeck.position.set(0.12, 0.41, 0.1); grp.add(stampNeck);
+          /* A hooded document-keeper: a bell-shaped paper robe (lathe),
+             a plain round head with a cowl collar — no face — holding a
+             stamped approval sheet. Reads as "documents / approval",
+             not a stack of cardboard. Palette: paper cream + walnut
+             dark accent (the stamp). */
+          var robePts = [
+            new THREE.Vector2(0.0, 0), new THREE.Vector2(0.42, 0),
+            new THREE.Vector2(0.5, 0.06), new THREE.Vector2(0.46, 0.3),
+            new THREE.Vector2(0.38, 0.62), new THREE.Vector2(0.3, 0.9),
+            new THREE.Vector2(0.26, 1.02), new THREE.Vector2(0.2, 1.08),
+            new THREE.Vector2(0.0, 1.1)
+          ];
+          var robe = new THREE.Mesh(new THREE.LatheGeometry(robePts, 32),
+            new THREE.MeshStandardMaterial({ color:0xefe7d3, roughness:.9 }));
+          robe.position.y = 0.09; robe.castShadow = true; grp.add(robe);
+          /* fabric fold grooves around the robe */
+          [[0.47, 0.35], [0.4, 0.65]].forEach(function(f){
+            var groove = new THREE.Mesh(new THREE.TorusGeometry(f[0], 0.012, 8, 40),
+              new THREE.MeshStandardMaterial({ color:0xddd0b2, roughness:.9 }));
+            groove.rotation.x = Math.PI/2; groove.position.y = f[1]; grp.add(groove);
+          });
+          var head = new THREE.Mesh(new THREE.SphereGeometry(0.2, 24, 18),
+            new THREE.MeshStandardMaterial({ color:0xefe7d3, roughness:.9 }));
+          head.scale.y = 1.1; head.position.y = 1.33; head.castShadow = true; grp.add(head);
+          var collar = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.05, 10, 28),
+            new THREE.MeshStandardMaterial({ color:0xe2d7bd, roughness:.9 }));
+          collar.rotation.x = Math.PI/2; collar.position.y = 1.16; collar.castShadow = true; grp.add(collar);
+          /* arms reaching forward to hold the sheet */
+          [-1, 1].forEach(function(side){
+            var arm = new THREE.Mesh(new THREE.CapsuleGeometry(0.07, 0.3, 4, 10),
+              new THREE.MeshStandardMaterial({ color:0xefe7d3, roughness:.9 }));
+            arm.position.set(side*0.3, 0.82, 0.22);
+            arm.rotation.set(-0.9, 0, side*0.25); arm.castShadow = true; grp.add(arm);
+          });
+          /* the approval sheet, tilted toward the viewer, dark stamp = the
+             one dark accent */
+          var sheetGrp = new THREE.Group();
+          sheetGrp.position.set(0, 0.82, 0.45); sheetGrp.rotation.x = -0.45;
+          var sheet = new THREE.Mesh(roundedBox(0.5, 0.65, 0.02, 0.008),
+            new THREE.MeshStandardMaterial({ color:0xf8f4e8, roughness:.85 }));
+          sheet.castShadow = true; sheetGrp.add(sheet);
+          var stamp = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.085, 0.016, 24),
+            new THREE.MeshStandardMaterial({ color:0x4a3520, roughness:.6 }));
+          stamp.rotation.x = Math.PI/2; stamp.position.set(0.05, -0.14, 0.018); sheetGrp.add(stamp);
+          grp.add(sheetGrp);
+          /* low document-pile base the keeper stands on */
+          var pile = new THREE.Mesh(roundedBox(0.95, 0.09, 0.75, 0.04),
+            new THREE.MeshStandardMaterial({ color:0xe6dcc4, roughness:.9 }));
+          pile.position.y = 0.045; pile.castShadow = pile.receiveShadow = true; grp.add(pile);
         } else if (p.id === 'gemfund'){
-          var gem = new THREE.Mesh(new THREE.OctahedronGeometry(0.42, 0),
-            new THREE.MeshPhysicalMaterial({ color:0x0f9d7a, roughness:.12, metalness:.05,
-              emissive:0x063f31, emissiveIntensity:.7, clearcoat:.6, flatShading:true }));
-          gem.position.y = 0.85; gem.scale.y = 1.35; gem.castShadow = true;
-          grp.add(gem); grp.userData.spin = gem;
-          var ring = new THREE.Mesh(new THREE.TorusGeometry(0.62, 0.025, 12, 64),
-            new THREE.MeshStandardMaterial({ color:0xd8b25e, roughness:.35, metalness:.45 }));
+          /* A real cut crystal, not a glowing octahedron: 8-sided crown
+             + girdle + pointed pavilion, flat-shaded, with transmission /
+             ior / thickness over the RoomEnvironment so it refracts and
+             glints instead of reading as lit plastic. It floats, spins
+             and bobs (animate loop drives userData.spin/.ring, as before).
+             Palette: emerald + profiled gold ring + dark disc accent. */
+          var gemMat = new THREE.MeshPhysicalMaterial({
+            color:0x18a87c, roughness:.06, metalness:0,
+            transmission:.9, thickness:.9, ior:1.8,
+            clearcoat:1, clearcoatRoughness:.1,
+            attenuationColor: new THREE.Color(0x0a7a58), attenuationDistance:.6,
+            flatShading:true, envMapIntensity:1.2 });
+          var gemGrp = new THREE.Group();
+          var pavilion = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.03, 0.46, 8, 1), gemMat);
+          pavilion.position.y = -0.23; pavilion.castShadow = true; gemGrp.add(pavilion);
+          var girdle = new THREE.Mesh(new THREE.CylinderGeometry(0.43, 0.43, 0.05, 8), gemMat);
+          girdle.castShadow = true; gemGrp.add(girdle);
+          var crown = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.42, 0.22, 8, 1), gemMat);
+          crown.position.y = 0.135; crown.castShadow = true; gemGrp.add(crown);
+          gemGrp.position.y = 0.85;
+          grp.add(gemGrp); grp.userData.spin = gemGrp;
+          /* profiled gold band (lathe, raised centre ridge) — not a plain torus */
+          var ringPts = [
+            new THREE.Vector2(0.58, -0.035), new THREE.Vector2(0.63, -0.02),
+            new THREE.Vector2(0.66, 0), new THREE.Vector2(0.63, 0.02),
+            new THREE.Vector2(0.58, 0.035)
+          ];
+          var ring = new THREE.Mesh(new THREE.LatheGeometry(ringPts, 48),
+            new THREE.MeshStandardMaterial({ color:0xd8b25e, roughness:.22, metalness:.95 }));
           ring.rotation.x = Math.PI/2; ring.position.y = 0.85; grp.add(ring); grp.userData.ring = ring;
+          /* dark disc under the floating crystal — the one dark accent */
+          var disc = new THREE.Mesh(new THREE.CylinderGeometry(0.72, 0.72, 0.035, 40),
+            new THREE.MeshStandardMaterial({ color:0x14261f, roughness:.9 }));
+          disc.position.y = 0.02; disc.receiveShadow = true; grp.add(disc);
         } else {
-          var slab = new THREE.Mesh(new THREE.BoxGeometry(0.95, 1.5, 0.16),
-            new THREE.MeshStandardMaterial({ map: calendarTex, roughness:.8 }));
+          /* Calendar monolith: a rounded, bevelled matte slab (no longer
+             a poster on a box) + the calendar grid as a front plane +
+             raised 3D date cells — the gold "hot" date is a raised gold
+             tile, not just texture — + a dark binder clip across the top. */
+          var slab = new THREE.Mesh(roundedBox(0.95, 1.5, 0.14, 0.05),
+            new THREE.MeshStandardMaterial({ color:0xe9ead9, roughness:.85 }));
           slab.position.y = 0.95; slab.castShadow = true; grp.add(slab);
-          var slabBack = new THREE.Mesh(new THREE.BoxGeometry(1.0, 1.55, 0.1), MAT.stone);
-          slabBack.position.set(0, 0.95, -0.06); grp.add(slabBack);
+          var calFace = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 1.0),
+            new THREE.MeshStandardMaterial({ map: calendarTex, roughness:.85 }));
+          calFace.position.set(0, 0.95, 0.078); grp.add(calFace);
+          /* raised gold tile on the hot date (texture grid row 1, col 2) */
+          var goldCell = new THREE.Mesh(roundedBox(0.12, 0.1, 0.03, 0.015),
+            new THREE.MeshStandardMaterial({ color:0xd9a441, roughness:.35, metalness:.55 }));
+          goldCell.position.set(0, 1.08, 0.095); goldCell.castShadow = true; grp.add(goldCell);
+          /* second hot date (row 3, col 4), raised cream tile */
+          var creamCell = new THREE.Mesh(roundedBox(0.12, 0.1, 0.025, 0.015),
+            new THREE.MeshStandardMaterial({ color:0xf7f5ea, roughness:.85 }));
+          creamCell.position.set(0.296, 0.823, 0.09); grp.add(creamCell);
+          /* dark binder clip across the top — the one dark accent */
+          var clip = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.55, 16),
+            new THREE.MeshStandardMaterial({ color:0x4a3520, roughness:.55, metalness:.3 }));
+          clip.rotation.z = Math.PI/2; clip.position.set(0, 1.74, 0); clip.castShadow = true; grp.add(clip);
         }
         return grp;
       }
@@ -818,6 +950,13 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         skylight.rotation.x = Math.PI/2; skylight.position.set(0, RH - 0.02, -0.6); room.add(skylight);
         var rLight = new THREE.PointLight(0xfff2da, 30, 16, 1.4);
         rLight.position.set(0, 4.2, 0.5); room.add(rLight);
+        /* Round 14: warm spotlight straight down onto the sculpture —
+           the museum pool of light. No shadow map (the sun + contact
+           discs carry grounding); penumbra keeps the edge soft. */
+        var spot = new THREE.SpotLight(0xffe2b0, 40, 14, 0.55, 0.65, 1.6);
+        spot.position.set(0, 4.7, 0.4);
+        spot.target.position.set(0, 0.7, -0.4);
+        room.add(spot); room.add(spot.target);
 
         var main = framedPainting(loadArt(p.art), 4.8, 3.1, null);
         main.position.set(0, 2.55, -RD/2 + 0.06); room.add(main);
@@ -829,8 +968,18 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         markClickable(sideL, { type:'detail', id:p.id });
         markClickable(sideR, { type:'detail', id:p.id });
 
-        var rPlinth = new THREE.Mesh(new THREE.CylinderGeometry(1.05, 1.12, 0.14, 44), MAT.plinth);
-        rPlinth.position.set(0, 0.07, -0.4); rPlinth.castShadow = rPlinth.receiveShadow = true; room.add(rPlinth);
+        /* Round 14: a real plinth — base + tapered column + stone cap,
+           0.62 tall (the hall plinth's 0.5 tapered form is the model),
+           not the 0.14 disc of before. Sculptures sit on PLINTH_H. */
+        var PLINTH_H = 0.62;
+        var rPlinth = new THREE.Group();
+        var plBase = new THREE.Mesh(new THREE.CylinderGeometry(1.02, 1.14, 0.12, 44), MAT.plinth);
+        plBase.position.y = 0.06; plBase.castShadow = plBase.receiveShadow = true; rPlinth.add(plBase);
+        var plCol = new THREE.Mesh(new THREE.CylinderGeometry(0.8, 0.94, 0.4, 44), MAT.plinth);
+        plCol.position.y = 0.32; plCol.castShadow = plCol.receiveShadow = true; rPlinth.add(plCol);
+        var plCap = new THREE.Mesh(new THREE.CylinderGeometry(0.92, 0.8, 0.1, 44), MAT.stone);
+        plCap.position.y = 0.57; plCap.castShadow = plCap.receiveShadow = true; rPlinth.add(plCap);
+        rPlinth.position.set(0, 0, -0.4); room.add(rPlinth);
         /* Round 12: the plinth is part of the statue's hover target.
            Before, only the sculpture meshes were clickable — a small
            target (the Gemfund gem is ~0.8 units) surrounded by a
@@ -843,10 +992,21 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         /* y=0.028: the room floor sits at y=0.02 (round 4 z-fight fix), so a
            disc at the old y=0.006 would sit UNDER the opaque floor and lose
            the depth test entirely. */
-        contactShadow(0, 0.028, -0.4, 1.7, room);
+        contactShadow(0, 0.028, -0.4, 2.0, room);
         var sculpt = buildSculpture(p);
-        sculpt.position.set(0, 0.14, -0.4); room.add(sculpt);
+        sculpt.position.set(0, PLINTH_H, -0.4); room.add(sculpt);
         markClickable(sculpt, { type:'detail', id:p.id });
+        /* Round 14: Nagi staging — a miniature of the same sculpture
+           (~0.35) on a small pedestal to the side, so the main piece
+           reads as monumental. Same 'detail' key as the main piece. */
+        var miniPed = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.36, 0.5, 28), MAT.stone);
+        miniPed.position.set(3.4, 0.25, -2.6); miniPed.castShadow = miniPed.receiveShadow = true; room.add(miniPed);
+        contactShadow(3.4, 0.028, -2.6, 0.85, room);
+        var mini = buildSculpture(p);
+        mini.scale.setScalar(0.32);
+        mini.position.set(3.4, 0.5, -2.6);
+        room.add(mini);
+        markClickable(mini, { type:'detail', id:p.id });
 
         room.updateMatrixWorld(true);
         rooms[p.id] = {
@@ -1453,8 +1613,8 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
   /* Build marker (round 13): lets a visual check confirm which build is
      actually loaded, so a stale-cache check can never again be mistaken
      for a failed fix. */
-  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r13';
+  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r14';
   var sceneEl = document.getElementById('scene');
-  if (sceneEl) sceneEl.dataset.build = 'r13';
+  if (sceneEl) sceneEl.dataset.build = 'r14';
   return gl;
 }
