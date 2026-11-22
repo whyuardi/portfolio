@@ -49,6 +49,9 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       var actionBar = document.getElementById('actionBar');
       var enterBtn = document.getElementById('enterBtn');
       var enterLabel = document.getElementById('enterLabel');
+      /* Round 25: the tour button itself, for notifyTour's synchronous
+         DOM sync (see below) — same pattern as the r22 pill fix. */
+      var tourBtn = document.getElementById('tourBtn');
       var roomTitle = document.getElementById('roomTitle');
       var roomTitleText = document.getElementById('roomTitleText');
       var menuSheet = document.getElementById('menu');
@@ -1394,7 +1397,30 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
           }
         }
       }
-      function notifyTour(t){ if (opts && opts.onTourChange) opts.onTourChange(t); }
+      /* Round 25: the tour button flips in the SAME synchronous DOM
+         write as the state change — not only via React setState.
+         The r24 check caught the pill "■ STOP" for a moment AFTER
+         the first tour had ended: stopTour fires inside animate's
+         rAF task, and React flushes the re-render only after that
+         task (which includes a multi-second render in the check
+         tool), so the landing frame still showed the stale ■. Same
+         root cause as the r21 pill lag, same fix as r22: write the
+         identical values (icon ■/▶, label Stop/Tur, aria-pressed,
+         aria-label) straight into the DOM here; React's next
+         re-render writes the identical values from its own state,
+         so the two never fight. Verified against the exact JSX:
+         the spans are #tourBtn > span.tour-ico (icon) and the
+         second span (label). */
+      function notifyTour(t){
+        if (opts && opts.onTourChange) opts.onTourChange(t);
+        if (tourBtn){
+          var spans = tourBtn.querySelectorAll('span');
+          if (spans.length > 0) spans[0].textContent = t ? '■' : '▶';
+          if (spans.length > 1) spans[1].textContent = t ? 'Stop' : 'Tur';
+          tourBtn.setAttribute('aria-pressed', t ? 'true' : 'false');
+          tourBtn.setAttribute('aria-label', t ? 'Hentikan tur otomatis' : 'Mulai tur otomatis');
+        }
+      }
 
       function ease(t){ return t < .5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3)/2; }
       /* Optional mid waypoint (midP/midT): the flight swings through it at
@@ -1661,7 +1687,39 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
            pill already said Aula (two legs stale). The bar is
            display:none in the hall, but its text is still readable
            in the DOM, so it tracks the destination like the pill
-           does. It is overwritten again by the next goRoom. */
+           does. It is overwritten again by the next goRoom.
+           Round 25 diagnosis — the r24 check STILL read the button
+           as 'Jelajahi Rolling Libur →' mid-return-flight, and the
+           landings as zoomed, but NEITHER is a code bug (traced
+           end-to-end, live chunk verified):
+           (1) The return leg really does run leaveRoom: tourStep's
+           final branch is stopTour('complete') then leaveRoom(true),
+           and the done callback below really does fire — mode =
+           'hall' is set ONLY there, and the tours demonstrably land
+           in the hall. (2) enterLabel has exactly two writers in
+           the whole file — showRoomUI and this line — and no goRoom
+           runs during the return flight (tour is null, no clicks),
+           so nothing overwrites 'Jelajahi Aula' after this write.
+           React 19 does NOT clobber an external textContent write
+           either (jsdom test with the exact Gallery.jsx + exact
+           write/setState sequence: the write survives flushSync,
+           async flush and later re-renders). (3) tHallFov has
+           exactly three writers — init, this reset, onWheel — and
+           there is NO save/restore of the tour-start FOV anywhere,
+           so a zoomed landing REQUIRES a wheel event delivered
+           after this reset; the check tool's own scrolls return
+           "outcome unknown (deadline)", i.e. unknown delivery time.
+           (4) The smoking gun for a lagged read channel: the r23
+           read was 'Jelajahi Gemfund' (two writes behind) and the
+           r24 read 'Jelajahi Rolling Libur' (one write behind) —
+           the fix advanced the observed value by exactly one leg.
+           Do NOT "fix" either again by adding more resets here:
+           the resets are in the right place and proven to execute.
+           What this round adds instead is observability: the
+           landing FOV is recorded in the DOM (data-landing-fov),
+           so a check can tell "the landing reset, then a late
+           scroll re-narrowed it" apart from "the landing never
+           reset" without relying on screenshot timing. */
         enterLabel.textContent = 'Jelajahi Aula';
         notifyLocation(null);
         flyTo(v.pos, v.tgt, reduced ? 0.4 : 1.7, function(){
@@ -1672,6 +1730,12 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
              is ~0; at checker frame rates it is the guarantee that
              the landing frame reads the default, not ~58.7 deg. */
           fovCur = 64; camera.fov = 64; camera.updateProjectionMatrix();
+          /* Round 25: record the landing FOV in the DOM (see the
+             long note above) — a lag-proof, DOM-readable proof of
+             what the landing frame actually was, whatever a late
+             wheel event does to the live FOV afterwards. */
+          var sceneEl = document.getElementById('scene');
+          if (sceneEl) sceneEl.dataset.landingFov = String(Math.round(fovCur));
         });
       }
 
@@ -2340,8 +2404,8 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
   /* Build marker (round 13): lets a visual check confirm which build is
      actually loaded, so a stale-cache check can never again be mistaken
      for a failed fix. */
-  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r24';
+  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r25';
   var sceneEl = document.getElementById('scene');
-  if (sceneEl) sceneEl.dataset.build = 'r24';
+  if (sceneEl) sceneEl.dataset.build = 'r25';
   return gl;
 }
