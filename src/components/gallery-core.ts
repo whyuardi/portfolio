@@ -394,25 +394,31 @@ export function startGallery(projects: Project[]): GalleryApi {
          fast (0.38 by mid-radius, 0 at the edge), so from the low default
          camera the ring outside the 0.95 plinth base read as nothing. This
          one holds high alpha far out: the visible ring stays 0.6 -> 0.4
-         across most of its width instead of collapsing to zero. */
+         across most of its width instead of collapsing to zero.
+         Round 7: alphas raised again (0.80/0.70/0.52/0.28) — the round 6
+         check found the wide halo no longer read clearly from the default
+         view, only the thin baseRing band. The centre stays hidden under
+         the plinth (base radius 0.95), so the visible ring is a soft
+         gradient, not a black blob. */
       var contactTexStrong = (function(){
         var c = document.createElement('canvas'); c.width = c.height = 256;
         var g = c.getContext('2d');
         var rg = g.createRadialGradient(128, 128, 4, 128, 128, 128);
-        rg.addColorStop(0, 'rgba(24,16,8,0.72)'); rg.addColorStop(0.35, 'rgba(24,16,8,0.62)');
-        rg.addColorStop(0.65, 'rgba(24,16,8,0.42)'); rg.addColorStop(0.85, 'rgba(24,16,8,0.18)');
+        rg.addColorStop(0, 'rgba(24,16,8,0.80)'); rg.addColorStop(0.35, 'rgba(24,16,8,0.70)');
+        rg.addColorStop(0.65, 'rgba(24,16,8,0.52)'); rg.addColorStop(0.85, 'rgba(24,16,8,0.28)');
         rg.addColorStop(1, 'rgba(24,16,8,0)');
         g.fillStyle = rg; g.fillRect(0, 0, 256, 256);
         return new THREE.CanvasTexture(c);
       })();
       /* wide faint halo: a second, much larger disc so the plinth reads as
          grounded from the low default camera, where a single tight disc
-         foreshortens to a thin band. */
+         foreshortens to a thin band. Round 7: alphas raised 0.16->0.26 /
+         0.10->0.17 so the halo reads from the default view again. */
       var contactTexHalo = (function(){
         var c = document.createElement('canvas'); c.width = c.height = 256;
         var g = c.getContext('2d');
         var rg = g.createRadialGradient(128, 128, 4, 128, 128, 128);
-        rg.addColorStop(0, 'rgba(24,16,8,0.16)'); rg.addColorStop(0.7, 'rgba(24,16,8,0.10)');
+        rg.addColorStop(0, 'rgba(24,16,8,0.26)'); rg.addColorStop(0.7, 'rgba(24,16,8,0.17)');
         rg.addColorStop(1, 'rgba(24,16,8,0)');
         g.fillStyle = rg; g.fillRect(0, 0, 256, 256);
         return new THREE.CanvasTexture(c);
