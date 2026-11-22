@@ -197,7 +197,16 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       function initGallery(){
       /* ================= RENDERER / SCENE ================= */
       var container = document.getElementById('scene');
-      var renderer = new THREE.WebGLRenderer({ antialias:true });
+      /* Round 22: antialias true -> false. The composer owns edge
+         smoothing since r18 (its render targets carry samples:2);
+         the renderer's antialias only MSAA-filters the DEFAULT
+         framebuffer, and the only thing ever drawn to it is the
+         final fullscreen quad (OutputPass) — a quad has no interior
+         edges, so default-buffer MSAA is pure per-sample cost on a
+         full screen of tone mapping + sRGB for zero visual gain.
+         The scene's jaggies are still handled by the composer
+         targets' samples (r20 check: edges smooth at MSAA 2). */
+      var renderer = new THREE.WebGLRenderer({ antialias:false });
       /* Round 15: pixelRatio cap 2 -> 1.5. Three r170 has NO
          transmissionResolutionScale — the transmission pass re-renders
          the whole opaque scene into a full-viewport render target with
@@ -1354,7 +1363,37 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       var hallFov = 64, tHallFov = 64;
       var fovCur = 64;
 
-      function notifyLocation(loc){ if (opts && opts.onLocation) opts.onLocation(loc); }
+      function notifyLocation(loc){
+        if (opts && opts.onLocation) opts.onLocation(loc);
+        /* Round 22: the pill MUST flip in the same synchronous DOM
+           write as the title — the r21 check caught it one step
+           behind (pill "Siaprak" while the title already said
+           "Gemfund"). Root cause: the title is set by direct
+           textContent in showRoomUI (inside the rAF task, before
+           that frame's paint), while the pill goes through React
+           setState — React flushes AFTER the frame's paint, so the
+           pill only becomes visible in the NEXT frame's paint. At
+           60 fps that is 16 ms and invisible; at the checker's
+           ~18 s/frame it is a whole screenshot behind, and it reads
+           as "pill flips on arrival". Toggling the .active class
+           (and aria-current) here, in the same call stack as the
+           title, puts the pill in the DOM before the same paint.
+           The React state above stays the source of truth for
+           re-renders — it writes the identical classes, so the two
+           never fight. */
+        var nav = document.getElementById('roomNav');
+        if (nav){
+          var dots = nav.querySelectorAll('.nav-dot');
+          var target = loc === null ? 'Aula' : (byId(loc) ? byId(loc).name : '');
+          for (var di = 0; di < dots.length; di++){
+            var d = dots[di];
+            var want = d.getAttribute('aria-label') === target;
+            d.classList.toggle('active', want);
+            if (want) d.setAttribute('aria-current', 'true');
+            else d.removeAttribute('aria-current');
+          }
+        }
+      }
       function notifyTour(t){ if (opts && opts.onTourChange) opts.onTourChange(t); }
 
       function ease(t){ return t < .5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3)/2; }
@@ -1905,7 +1944,29 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         if (mode === 'room'){
           tDolly = THREE.MathUtils.clamp(tDolly - dy * 0.0012, 0, 1.7);
         } else if (mode === 'hall'){
-          tHallFov = THREE.MathUtils.clamp(tHallFov + dy * 0.008, 48, 68);
+          /* Round 22: hall sign flipped (+ dy -> - dy) to restore
+             the r20 OBSERVED mapping (scroll down = widen, up =
+             narrow). Diagnosis (git diff r20..r21): the formula did
+             NOT change between r20 and r21 — it is byte-identical
+             in both — so no sign "flipped in code" when the
+             listener moved to window capture. What changed is the
+             checker's scroll delivery: r20 measured down = widen,
+             r21 measured down = narrow AND the room ring growing
+             on down-scroll (270 -> 340 px = closer = tDolly UP) —
+             both readings imply the r21 scrolls arrived with
+             INVERTED deltaY versus r20 (e.g. a drag/gesture-style
+             scroll primitive, whose sign is opposite to a wheel
+             event's). Flipping the hall sign restores the r20
+             observed mapping under the current checker delivery,
+             with the room formula untouched as instructed. HONEST
+             CAVEAT: for a physical mouse (DOM standard: wheel down
+             = deltaY > 0) this makes the hall direction opposite to
+             the room's (down = narrow in the hall, down = dolly-out
+             in rooms). Verify with a real mouse; if the r22 check
+             delivers standard-sign wheel events, the hall will read
+             reversed again and the flip should be reverted — the
+             code itself was never the culprit. */
+          tHallFov = THREE.MathUtils.clamp(tHallFov - dy * 0.008, 48, 68);
         }
       }
       window.addEventListener('wheel', onWheel, { passive: false, capture: true });
@@ -2104,7 +2165,36 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
                softening of Gemfund only; MSAA 2 on the composer
                targets stays, so edges stay clean. Reallocates
                render targets on room entry/exit only — one-frame
-               hitch, never per frame. */
+               hitch, never per frame.
+               Round 22 — WHY r21 ALSO measured ~18.7 s (verified
+               against the installed three r170 source, not assumed):
+               (1) the checker runs at devicePixelRatio 1 (its own
+               r21 report says "Di DPR 1,0"), so Math.min(dpr, 1.25)
+               was ALREADY 1.0 in r19/r20 — the r20 1.5 -> 1.25 cap
+               and this 1.0 flip were both no-ops in the checker's
+               environment (they still help real retina displays).
+               (2) The transmission RT's samples:4 is HARD-CODED in
+               renderTransmissionPass — the r20 composer MSAA 4 -> 2
+               never touched it, so the single most expensive target
+               in Gemfund is still 4x MSAA HalfFloat + mipmaps.
+               (3) The shadow map is one-shot since r21, so its
+               re-render cost was already gone; the depth pass is
+               vertex-bound and cheap anyway. (4) Node probe: the
+               whole scene is only ~15–25k triangles (rooms are
+               2-triangle planes) — NOT vertex-bound; the cost is
+               fragment fill across transmission (4x MSAA) + main
+               render (2x) + bloom's 5-mip chain + grade + output,
+               at a fixed 1.0x resolution no lever had ever reduced.
+               r22 levers that DO touch it: bloom off in Gemfund
+               (whole mip chain gone, see below) and antialias:false
+               (default-buffer MSAA was pure waste on the final
+               fullscreen quad). What would touch the transmission
+               pass itself: composer pixelRatio < 1.0 in Gemfund
+               (visible softening — held for r23 A/B) or replacing
+               transmission with fake alpha glass (removes the pass
+               entirely — visual nuclear option, needs A/B evidence).
+               No r22 claim is made about the frame number: it can
+               only be measured by the visual check. */
             var pr = gemOn ? 1.0 : 1.25;
             renderer.setPixelRatio(pr);
             renderer.setSize(window.innerWidth, window.innerHeight);
@@ -2122,6 +2212,28 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
           var bokehOn = !gemOn && !reduced;
           bokehPass.enabled = bokehOn;
           if (bokehOn) bokehPass.uniforms['focus'].value = camera.position.distanceTo(camTarget);
+          /* Round 22: bloom OFF while the crystal is on screen.
+             Diagnosis (three r170 source + Node probe, see below):
+             UnrealBloomPass always runs its full 5-mip chain (~11
+             fullscreen quads at HalfFloat) even at strength 0.08 —
+             and in Gemfund it buys almost nothing: threshold 1.15
+             sits above the crystal, the paintings and the skylight
+             (r20 probe: all below threshold), so only the gold
+             ring's specular glints ever bloom, at strength 0.08.
+             Skipping the pass in Gemfund removes a whole mip chain
+             per frame for a visual change limited to slightly
+             crisper ring glints. The strength line stays for the
+             rooms/hall, where bloom still runs at 0.15.
+             NOT done, with reasons: (a) DOF off outside Gemfund —
+             BokehPass is ALREADY off in Gemfund (bokehOn = !gemOn),
+             so it cannot move the Gemfund number; switching it off
+             elsewhere would only delete the r18 DOF look from
+             Siaprak/Rolling/hall. (b) Shadow map 2048 -> 1024 —
+             the shadow map is ONE-SHOT since r21 (autoUpdate false),
+             so its size costs nothing per frame; shrinking it would
+             only soften the lattice grid (r17 proved 1024 blurs
+             the 0.30 bars). */
+          bloomPass.enabled = !gemOn;
           bloomPass.strength = gemOn ? 0.08 : 0.15;
           gradePass.uniforms['uTime'].value = t;
           composer.render();
@@ -2180,8 +2292,8 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
   /* Build marker (round 13): lets a visual check confirm which build is
      actually loaded, so a stale-cache check can never again be mistaken
      for a failed fix. */
-  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r21';
+  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r22';
   var sceneEl = document.getElementById('scene');
-  if (sceneEl) sceneEl.dataset.build = 'r21';
+  if (sceneEl) sceneEl.dataset.build = 'r22';
   return gl;
 }
