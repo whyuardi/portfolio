@@ -248,7 +248,7 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       var fill = new THREE.DirectionalLight(0xdfeaf2, 0.35);
       fill.position.set(-6, 5, -8);
       scene.add(fill);
-      var oculusGlow = new THREE.PointLight(0xffe6bf, 30, 20, 2);
+      var oculusGlow = new THREE.PointLight(0xffe6bf, 22, 20, 2);
       oculusGlow.position.set(0, 5.2, 0);
       scene.add(oculusGlow);
 
@@ -681,14 +681,22 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
          diagonal band) and the slanted sun threw it off-centre. Now
          7x7 at 0.75 spacing with 0.14 bars, under the near-overhead
          sun, so the floor shadow reads as neat squares centred on
-         the plinth. */
+         the plinth.
+         Round 16: the floor grid still did not read — the shadow on
+         the white plinth is crisp, but on the wood floor it is a
+         soft oval. Two causes: 0.14 bars are ~5 texels in the 1024
+         shadow map and PCFSoft blurs them out, and the unshadowed
+         oculus point light floods the floor and kills the contrast.
+         Fix: bars 0.14 -> 0.22 (~8 texels), spacing 0.75 -> 0.9
+         (bigger cells, bar length 5.6 so the 7x7 grid stays
+         complete), oculusGlow 30 -> 22. */
       var lattice = new THREE.Group();
       var latticeMat = new THREE.MeshStandardMaterial({ color:0x6d4f30, roughness:.6, metalness:.3 });
       for (var li = -3; li <= 3; li++){
-        var lbx = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.05, 0.14), latticeMat);
-        lbx.position.set(0, 0, li*0.75); lbx.castShadow = true; lattice.add(lbx);
-        var lbz = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.05, 4.6), latticeMat);
-        lbz.position.set(li*0.75, 0, 0); lbz.castShadow = true; lattice.add(lbz);
+        var lbx = new THREE.Mesh(new THREE.BoxGeometry(5.6, 0.05, 0.22), latticeMat);
+        lbx.position.set(0, 0, li*0.9); lbx.castShadow = true; lattice.add(lbx);
+        var lbz = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.05, 5.6), latticeMat);
+        lbz.position.set(li*0.9, 0, 0); lbz.castShadow = true; lattice.add(lbz);
       }
       lattice.position.y = HALL_H + 0.12;
       hall.add(lattice);
@@ -804,6 +812,12 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
          palette per room, ONE dark accent, no faces. The hall stone
          knot is untouched. Each sculpture keeps the same footprint so
          the room camera/tour framing still works. */
+      /* Round 16: every transmissive crystal material in the scene
+         (main Gemfund crystal + its miniature) is registered here so
+         animate can gate the transmission pass on the crystal actually
+         being on screen — see the gate before renderer.render. */
+      var gemMats = [];
+      var gemTransmissionOn = true;
       function buildSculpture(p){
         var grp = new THREE.Group();
         if (p.id === 'siaprak'){
@@ -881,13 +895,34 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
              explicitly on the material (same PMREM texture) so the
              scene-intensity override is skipped and the material's
              own envMapIntensity is honoured. Transmitted light now
-             ~40-80% per channel instead of ~0-3%. */
+             ~40-80% per channel instead of ~0-3%.
+             Round 16 — why r15 read as clear glass, not emerald, and
+             why the crown stayed frosted while the pavilion went clear
+             (same r170 shader): transmittance = diffuseColor x
+             exp(-(-log(attenuationColor)/attenuationDistance) x
+             thickness), and getVolumeTransmissionRay makes the path
+             length = thickness (0.45) regardless of angle. r15's pale
+             diffuse (0xe8f7ef) x light attenuation (0x2fae7d over
+             2.2) multiplies out to ~(0.39, 0.78, 0.64) — pale mint,
+             nearly clear. And the crown's top face is seen at a
+             grazing angle, so Fresnel reflection of the bright
+             ceiling (envMapIntensity 2.2 + clearcoat) washes it
+             white, while what it transmits IS the bright ceiling.
+             Fix: emerald diffuse (0x7fd8ae) + much stronger green
+             attenuation (0x0e7a4e over 1.5) -> transmitted light
+             ~(0.04, 0.42, 0.19), a clear emerald that still lets the
+             painting show through; envMapIntensity 2.2 -> 1.5 so the
+             top face keeps its glint without the white wash. */
           var gemMat = new THREE.MeshPhysicalMaterial({
-            color:0xe8f7ef, roughness:.03, metalness:0,
+            color:0x7fd8ae, roughness:.03, metalness:0,
             transmission:1, thickness:.45, ior:1.5,
             clearcoat:1, clearcoatRoughness:.05,
-            attenuationColor: new THREE.Color(0x2fae7d), attenuationDistance:2.2,
-            flatShading:true, envMap: scene.environment, envMapIntensity:2.2 });
+            attenuationColor: new THREE.Color(0x0e7a4e), attenuationDistance:1.5,
+            flatShading:true, envMap: scene.environment, envMapIntensity:1.5 });
+          /* Round 16: registered for the transmission gate in animate
+             — the main crystal and its miniature each build their own
+             material, so both land here. */
+          gemMats.push(gemMat);
           var gemGrp = new THREE.Group();
           var pavilion = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.03, 0.46, 8, 1), gemMat);
           pavilion.position.y = -0.23; pavilion.castShadow = true; gemGrp.add(pavilion);
@@ -1054,10 +1089,26 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         markClickable(mini, { type:'detail', id:p.id });
 
         room.updateMatrixWorld(true);
+        /* Round 16 — why the r15 pitch fix "did nothing" in the live
+           check: the reset code (goRoom same-room branch, arrived())
+           works — after landing the camera IS at the canonical
+           framing. The canonical framing itself is the problem: these
+           camPos/camTarget values are unchanged since the first
+           commit (verified: identical in r13), a -5.6 deg pitch that
+           puts the floor's far edge (back wall) at 39% of frame
+           height, and the r14 statues are ~0.5 taller than the r13
+           ones, so the same framing now reads low and close. Fix:
+           true eye-level — camera (0, 1.6, 4.1), target (0, 1.6,
+           -0.5), pitch 0 deg. Floor band drops to ~32%, the plinth
+           base stays ~7% off the bottom edge, and all three statues
+           (tops 1.7-2.3) sit centred with the painting behind them.
+           z 4.1 is still inside the open-fronted room (front plane
+           4.5), and the miniature at azimuth ~27 deg stays in the
+           ~47 deg horizontal half-FOV. */
         rooms[p.id] = {
           group: room, sculpture: sculpt,
-          camPos: room.localToWorld(new THREE.Vector3(0, 1.75, 3.6)),
-          camTarget: room.localToWorld(new THREE.Vector3(0, 1.35, -0.5))
+          camPos: room.localToWorld(new THREE.Vector3(0, 1.6, 4.1)),
+          camTarget: room.localToWorld(new THREE.Vector3(0, 1.6, -0.5))
         };
       });
 
@@ -1618,6 +1669,23 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
               && !menuSheet.classList.contains('open') && !detailSheet.classList.contains('open')){
             updateHover(raycastHover(), hoverClientX, hoverClientY);
           }
+          /* Round 16: gate the transmission pass on the crystal
+             actually being on screen. Three r170 has no
+             transmissionResolutionScale — a transmissive material
+             costs a second full-viewport render (MSAA 4x + mipmaps)
+             every frame it is in the scene, even when the camera is
+             in another room or the hall. With transmission 0 the
+             crystal drops to the opaque list and the pass is skipped
+             entirely; it is only ever 0 while the crystal cannot be
+             seen (flights in/out and the hall arch view keep it on
+             via flightTarget / hallBest). The program flip costs one
+             recompile per visit, not per frame. */
+          var gemOn = (currentRoom === 'gemfund') || (flightTarget === 'gemfund')
+            || (mode === 'hall' && hallBest && hallBest.id === 'gemfund');
+          if (gemOn !== gemTransmissionOn){
+            gemTransmissionOn = gemOn;
+            gemMats.forEach(function(m){ m.transmission = gemOn ? 1 : 0; m.needsUpdate = true; });
+          }
           renderer.render(scene, camera);
         } catch(err){
           errBox.style.display = 'block';
@@ -1669,8 +1737,8 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
   /* Build marker (round 13): lets a visual check confirm which build is
      actually loaded, so a stale-cache check can never again be mistaken
      for a failed fix. */
-  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r15';
+  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r16';
   var sceneEl = document.getElementById('scene');
-  if (sceneEl) sceneEl.dataset.build = 'r15';
+  if (sceneEl) sceneEl.dataset.build = 'r16';
   return gl;
 }
