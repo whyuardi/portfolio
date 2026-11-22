@@ -10,7 +10,7 @@ export type Project = {
 
 export const PROJECTS: Project[] = [
         {
-          id:'siaprak', name:'Siaprak', world:'Dunia Siaprak',
+          id:'siaprak', name:'Siaprak', world:'Siaprak',
           tag:'Administrasi desa, dari meja ke genggaman.',
           desc:'Aplikasi Android yang dibangun sepenuhnya dengan Kotlin. Proyek ini jadi bukti stack Android native saya: bukan webview, bukan hibrida — murni Android.',
           status:'Studi kasus', live:false,
@@ -29,7 +29,7 @@ export const PROJECTS: Project[] = [
           ctas:[]
         },
         {
-          id:'gemfund', name:'Gemfund', world:'Dunia Gemfund',
+          id:'gemfund', name:'Gemfund', world:'Gemfund',
           tag:'Dana bersama, mengalir seperti air tenang.',
           desc:'Aplikasi mobile lintas platform yang dibangun dengan Flutter dan Dart — satu basis kode untuk Android dan iOS, dengan pengalaman yang tetap terasa native di keduanya.',
           status:'Studi kasus', live:false,
@@ -48,7 +48,7 @@ export const PROJECTS: Project[] = [
           ctas:[]
         },
         {
-          id:'rolling', name:'Rolling Libur', world:'Dunia Rolling Libur',
+          id:'rolling', name:'Rolling Libur', world:'Rolling Libur',
           tag:'Satu hari libur, bergantian dengan adil.',
           desc:'Web satu halaman untuk 14 peserta MagangHub di PT Ethes Teknologi Makmur: tiap orang memilih libur Jumat atau Sabtu, bergantian tiap minggu, dengan aturan selang-seling yang dijaga sistem. Sudah live dan dipakai kohort.',
           status:'Live', live:true,

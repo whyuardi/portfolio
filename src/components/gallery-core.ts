@@ -58,12 +58,12 @@ export function startGallery(projects: Project[]): GalleryApi {
         var b = document.createElement('button');
         b.type = 'button'; b.className = 'card';
         b.innerHTML =
-          '<img src="' + p.art + '" alt="Lukisan dunia ' + p.name + '" loading="lazy" />' +
+          '<img src="' + p.art + '" alt="Lukisan ' + p.name + '" loading="lazy" />' +
           '<span class="card-body">' +
             '<span class="card-top"><h3>' + p.name + '</h3>' +
             '<span class="status' + (p.live ? ' live' : '') + '">' + p.status + '</span></span>' +
             '<p>' + p.desc + '</p>' +
-            '<span class="go">Masuk ke dunianya →</span>' +
+            '<span class="go">Lihat proyeknya →</span>' +
           '</span>';
         b.addEventListener('click', function(){ enterRoom(p.id); });
         cardsEl.appendChild(b);
@@ -77,7 +77,7 @@ export function startGallery(projects: Project[]): GalleryApi {
       function openDetail(id){
         var p = byId(id); if (!p) return;
         document.getElementById('dImg').src = p.art;
-        document.getElementById('dImg').alt = 'Lukisan dunia ' + p.name;
+        document.getElementById('dImg').alt = 'Lukisan ' + p.name;
         document.getElementById('dTitle').textContent = p.world;
         document.getElementById('dTag').textContent = p.tag;
         var story = document.getElementById('dStory'); story.innerHTML = '';
@@ -342,7 +342,9 @@ export function startGallery(projects: Project[]): GalleryApi {
           mg.addColorStop(1, 'rgba(0,0,0,0)');
           g.fillStyle = mg; g.beginPath(); g.arc(mx, my, mr, 0, 7); g.fill();
         }
-        /* big high-contrast granite speckle: dark grains + light quartz.
+        /* granite speckle, toned down a touch in round 6: round 5 read as
+           dalmatian from afar, so grains are slightly smaller and softer
+           — still clearly speckled, just less shouty. Dark grains + light quartz.
            Drawn as tall ellipses, NOT squares: the torus-knot UV maps the
            knot's ~5.5-unit length to texture-x but only the ~0.75-unit tube
            circumference to texture-y, so a square reads on the surface as a
@@ -351,10 +353,10 @@ export function startGallery(projects: Project[]): GalleryApi {
            granite grain. */
         for (var i = 0; i < 7000; i++){
           var v = Math.random();
-          if (v < 0.45) g.fillStyle = 'rgba(38,31,22,' + (0.5 + Math.random()*0.35) + ')';
-          else if (v < 0.8) g.fillStyle = 'rgba(222,212,190,' + (0.45 + Math.random()*0.35) + ')';
-          else g.fillStyle = 'rgba(96,82,62,' + (0.4 + Math.random()*0.25) + ')';
-          var rx = 2.5 + Math.random()*3.5, ry = rx * 6;
+          if (v < 0.45) g.fillStyle = 'rgba(38,31,22,' + (0.38 + Math.random()*0.25) + ')';
+          else if (v < 0.8) g.fillStyle = 'rgba(222,212,190,' + (0.35 + Math.random()*0.25) + ')';
+          else g.fillStyle = 'rgba(96,82,62,' + (0.3 + Math.random()*0.2) + ')';
+          var rx = 2 + Math.random()*2.5, ry = rx * 6;
           g.beginPath();
           g.ellipse(Math.random()*512, Math.random()*512, rx, ry, 0, 0, 7);
           g.fill();
@@ -488,6 +490,26 @@ export function startGallery(projects: Project[]): GalleryApi {
       hall.add(plinth);
       contactShadow(0, 0.012, 0, 2.6, hall, contactTexStrong);
       contactShadow(0, 0.010, 0, 3.6, hall, contactTexHalo);
+      /* base ring: a soft dark band hugging the plinth foot. The flat discs
+         read well from the high default camera, but from a low/close camera
+         they foreshorten away and hide behind the plinth's widening base —
+         a vertical gradient band stays visible from any angle. Dark at the
+         floor, fading to nothing 12 cm up the plinth. */
+      var baseRingTex = (function(){
+        var c = document.createElement('canvas'); c.width = 4; c.height = 64;
+        var g = c.getContext('2d');
+        var lg = g.createLinearGradient(0, 0, 0, 64);
+        lg.addColorStop(0, 'rgba(24,16,8,0)');
+        lg.addColorStop(0.45, 'rgba(24,16,8,0.22)');
+        lg.addColorStop(1, 'rgba(24,16,8,0.5)');
+        g.fillStyle = lg; g.fillRect(0, 0, 4, 64);
+        return new THREE.CanvasTexture(c);
+      })();
+      var baseRing = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.96, 1.0, 0.12, 40, 1, true),
+        new THREE.MeshBasicMaterial({ map: baseRingTex, transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+      baseRing.position.y = 0.06; baseRing.renderOrder = 2;
+      hall.add(baseRing);
       var knot = new THREE.Mesh(new THREE.TorusKnotGeometry(0.34, 0.12, 120, 16),
         new THREE.MeshStandardMaterial({ map:stoneTex, bumpMap:stoneTex, bumpScale:0.9, roughness:.85 }));
       knot.scale.setScalar(0.62);

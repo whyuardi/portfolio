@@ -20,7 +20,7 @@ const sans = Manrope({
 export const metadata: Metadata = {
   title: 'Portfolio — Ardhiansyah',
   description:
-    'Portofolio Ardhiansyah Wahyu Setyadi — mobile developer, Yogyakarta. Tiga dunia, tiga cerita: Siaprak, Gemfund, Rolling Libur.',
+    'Portofolio Ardhiansyah Wahyu Setyadi — mobile developer, Yogyakarta. Tiga proyek, tiga cerita: Siaprak, Gemfund, Rolling Libur.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

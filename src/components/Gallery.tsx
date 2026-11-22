@@ -39,7 +39,7 @@ export default function Gallery() {
         <h2 id="roomTitleText" />
       </div>
 
-      <div id="hint">Seret untuk melihat sekeliling — klik pintu lengkung untuk masuk ke dunia proyek</div>
+      <div id="hint">Seret untuk melihat sekeliling — klik pintu lengkung untuk membuka proyek</div>
       <div id="actionBar">
         <button id="enterBtn" type="button">
           <span id="enterLabel">Jelajahi</span>
@@ -53,7 +53,7 @@ export default function Gallery() {
           <div className="sheet-head">
             <div>
               <p className="kicker">Daftar Proyek</p>
-              <h2>Tiga dunia, tiga cerita.</h2>
+              <h2>Tiga proyek, tiga cerita.</h2>
             </div>
             <button className="closeBtn" id="menuClose" type="button" aria-label="Tutup menu">
               ✕

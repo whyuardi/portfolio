@@ -2,7 +2,7 @@
 
 Galeri portofolio 3D (Three.js/WebGL) ala Nági: aula bundar berdinding krem, lantai kayu,
 oculus langit, tiga pintu lengkung — masing-masing berisi lukisan yang bisa diklik untuk
-masuk ke "dunia" proyek.
+masuk ke proyek.
 
 ## Proyek
 
