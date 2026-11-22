@@ -501,21 +501,30 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
 
       /* ---- hover: tooltip + subtle glow on the hovered group ---- */
       var hoverKey = null;
+      /* Hover glow, round 9: the old emissive 0x2e2110 was barely above
+         black under ACES, so the glow never read on screen. Now a strong
+         warm amber (emissive 0x8a5a18, intensity 1.25) for standard
+         materials and a warm tint for basic (textured) ones. */
       function applyGlow(o){
         var m = o.material;
         if (!m) return;
         if (m.emissive){
           if (o.userData._emOrig === undefined) o.userData._emOrig = m.emissive.getHex();
-          m.emissive.setHex(0x2e2110);
+          if (o.userData._emIntOrig === undefined) o.userData._emIntOrig = (m.emissiveIntensity === undefined ? 1 : m.emissiveIntensity);
+          m.emissive.setHex(0x8a5a18);
+          m.emissiveIntensity = 1.25;
         } else if (m.isMeshBasicMaterial){
           if (o.userData._colOrig === undefined) o.userData._colOrig = m.color.getHex();
-          m.color.setHex(0xffe2ae);
+          m.color.setHex(0xffc978);
         }
       }
       function restoreGlow(o){
         var m = o.material;
         if (!m) return;
-        if (m.emissive && o.userData._emOrig !== undefined) m.emissive.setHex(o.userData._emOrig);
+        if (m.emissive && o.userData._emOrig !== undefined){
+          m.emissive.setHex(o.userData._emOrig);
+          if (o.userData._emIntOrig !== undefined) m.emissiveIntensity = o.userData._emIntOrig;
+        }
         else if (m.isMeshBasicMaterial && o.userData._colOrig !== undefined) m.color.setHex(o.userData._colOrig);
       }
       function updateHover(hit, x, y){
@@ -816,10 +825,16 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         return { pos:base, tgt:d.multiplyScalar(10).add(base) };
       }
 
-      function goRoom(id){
+      /* fromTour: true only when the auto tour drives the move — any other
+         caller taking the camera means the user took over, so the tour
+         stops. Returns false when the call is swallowed because a flight
+         is already in progress, true when a flight started or we are
+         already standing in the target room. */
+      function goRoom(id, fromTour){
         var p = byId(id), r = rooms[id];
-        if (!p || !r || mode === 'transit') return;
-        if (mode === 'room' && currentRoom === id) return;
+        if (!p || !r || mode === 'transit') return false;
+        if (mode === 'room' && currentRoom === id) return true;
+        if (tour && !fromTour) stopTour();
         closeMenu();
         closeDetail();
         hideHallBar();
@@ -829,19 +844,43 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         actionBar.classList.add('show');
         backBtn.classList.add('show');
         hint.classList.add('hide');
+        /* Round 9: report the destination the moment it is chosen, not
+           when the flight lands — the dot nav label used to lag one stop
+           behind for the whole flight. */
+        notifyLocation(id);
         var arrived = function(){
           mode = 'room'; currentRoom = id;
           tRoomYaw = 0; tRoomPitch = 0; roomYaw = 0; roomPitch = 0;
           notifyLocation(id);
+          /* Round 9: the tour dwell starts at arrival, not at departure.
+             The old fixed 6.5 s timer from departure left under 2 s of
+             dwell once a slow (throttled) 2.4 s flight was subtracted,
+             so middle stops could pass unobserved. */
+          if (tour){
+            clearTimeout(tour.timer);
+            tour.timer = setTimeout(tourStep, 6500);
+          }
         };
         if (mode === 'room'){
-          /* room-to-room: swing through the hall centre so the camera
-             never clips a room wall on the straight chord between rooms. */
+          /* room-to-room: swing through the hall on a path offset to the
+             side of the centre statue. The old waypoint sat directly
+             above the plinth (0, 2.4, 0) and looked straight down at it
+             (0, 1.0, 0), so the statue filled the screen mid-flight.
+             The new waypoint sits 1.8 units out along the bisector
+             between the two rooms, 3 m up, and looks outward along the
+             same bisector — at the midpoint the statue is behind the
+             camera. Each arch crossing stays well inside its opening
+             (worst offset ~0.06 rad vs ~0.10 rad half-width). */
+          var src = byId(currentRoom);
+          var aMid = ((src ? src.angle : 0) + p.angle) / 2;
+          var midDir = new THREE.Vector3(Math.sin(aMid), 0, -Math.cos(aMid));
           flyTo(r.camPos, r.camTarget, reduced ? 0.6 : 2.4, arrived,
-            new THREE.Vector3(0, 2.4, 0), new THREE.Vector3(0, 1.0, 0));
+            new THREE.Vector3(midDir.x * 1.8, 3.0, midDir.z * 1.8),
+            new THREE.Vector3(midDir.x * 6, 1.5, midDir.z * 6));
         } else {
           flyTo(r.camPos, r.camTarget, reduced ? 0.4 : 1.9, arrived);
         }
+        return true;
       }
       function enterRoom(id){ goRoom(id); }
       function goTo(id){
@@ -871,6 +910,11 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         actionBar.classList.remove('show');
         backBtn.classList.remove('show');
         hideHallBar();
+        /* Round 9: same instant-location rule as goRoom — the dot nav
+           must show Aula the moment the return starts, and leaving the
+           room by any route ends a running tour. */
+        if (tour) stopTour();
+        notifyLocation(null);
         flyTo(v.pos, v.tgt, reduced ? 0.4 : 1.7, function(){ mode = 'hall'; currentRoom = null; notifyLocation(null); });
       }
 
@@ -909,7 +953,13 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         }
       }
 
-      /* ---- auto tour: walks the three rooms in order, then returns ---- */
+      /* ---- auto tour: walks the three rooms in order, then returns ----
+         Round 9: the dwell timer is armed by the arrival callback (see
+         goRoom), so every stop lasts a full ~6.5 s AFTER the camera
+         lands — the old timer ran from departure and slow flights ate
+         the dwell. tourStep only advances when the move actually
+         started; a swallowed call (flight in progress) retries shortly
+         instead of skipping a room. */
       var tour = null;
       function startTour(){
         stopTour();
@@ -921,9 +971,22 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         if (!tour) return;
         var order = PROJECTS.map(function(p){ return p.id; });
         if (tour.step >= order.length){ stopTour(); leaveRoom(); return; }
-        goRoom(order[tour.step]);
+        var target = order[tour.step];
+        if (!goRoom(target, true)){
+          /* a flight is already in progress: do not advance — retry
+             shortly; the in-flight arrival (or this retry) arms the
+             dwell timer. */
+          clearTimeout(tour.timer);
+          tour.timer = setTimeout(tourStep, 1200);
+          return;
+        }
         tour.step++;
-        tour.timer = setTimeout(tourStep, 6500);
+        if (mode === 'room' && currentRoom === target){
+          /* already standing in the target room: no flight, so no
+             arrival will arm the dwell timer — arm it here. */
+          clearTimeout(tour.timer);
+          tour.timer = setTimeout(tourStep, 6500);
+        }
       }
       function stopTour(){
         if (!tour) return;
@@ -937,8 +1000,29 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
       var raycaster = new THREE.Raycaster();
       var ndc = new THREE.Vector2();
       var el = renderer.domElement;
+      /* Last known pointer position for the per-frame hover refresh (see
+         animate): the pointer can sit still while the camera moves under
+         it (tour, flights, drag-look), which used to leave a stale
+         tooltip on screen. Touch pointers never hover, so they are
+         excluded. */
+      var hoverInside = false, hoverClientX = 0, hoverClientY = 0, hoverPointerType = '';
+      function raycastHover(){
+        raycaster.setFromCamera(ndc, camera);
+        var hits = raycaster.intersectObjects(clickables, false);
+        var hit = null;
+        if (hits.length){
+          var h0 = hits[0].object.userData.hit;
+          if (h0 && ((h0.type === 'enter' && mode === 'hall') || (h0.type === 'detail' && mode === 'room'))) hit = h0;
+        }
+        el.style.cursor = hit ? 'pointer' : 'grab';
+        return hit;
+      }
 
       el.addEventListener('pointerdown', function(e){
+        /* Round 9: any press on the canvas takes over from the tour
+           immediately — the old code only stopped it on swipe/Esc/menu,
+           so a drag during the tour kept running to the next stop. */
+        if (tour) stopTour();
         dragging = true; moved = 0; lastX = e.clientX; lastY = e.clientY;
         downX = e.clientX; downY = e.clientY; downT = performance.now();
         if (tip) tip.classList.remove('show');
@@ -958,18 +1042,13 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
             tRoomPitch = THREE.MathUtils.clamp(tRoomPitch - dy * 0.002, -0.16, 0.2);
           }
         } else {
-          /* hover: cursor + tooltip + subtle glow on the hovered group */
+          /* hover: cursor + tooltip + glow on the hovered group */
           ndc.set((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
           mouseX = ndc.x; mouseY = ndc.y;
-          raycaster.setFromCamera(ndc, camera);
-          var hits = raycaster.intersectObjects(clickables, false);
-          var hit = null;
-          if (hits.length){
-            var h0 = hits[0].object.userData.hit;
-            if (h0 && ((h0.type === 'enter' && mode === 'hall') || (h0.type === 'detail' && mode === 'room'))) hit = h0;
-          }
-          el.style.cursor = hit ? 'pointer' : 'grab';
-          updateHover(hit, e.clientX, e.clientY);
+          if (e.pointerType === 'touch') return;
+          hoverInside = true; hoverClientX = e.clientX; hoverClientY = e.clientY;
+          hoverPointerType = e.pointerType || 'mouse';
+          updateHover(raycastHover(), e.clientX, e.clientY);
         }
       });
       el.addEventListener('pointerup', function(e){
@@ -999,7 +1078,7 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         else if (hit.type === 'detail' && mode === 'room') openDetail(hit.id);
       });
       el.addEventListener('pointercancel', function(){ dragging = false; });
-      el.addEventListener('pointerleave', function(){ updateHover(null, 0, 0); });
+      el.addEventListener('pointerleave', function(){ hoverInside = false; updateHover(null, 0, 0); });
 
       /* ================= LOOP ================= */
       var clock = new THREE.Clock();
@@ -1079,6 +1158,16 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
           }
           camera.position.copy(camPos);
           camera.lookAt(camTarget);
+          /* Round 9: re-check what sits under the pointer every frame.
+             Without this, the tooltip/glow froze on the last target the
+             pointer moved over while the camera (tour, flight, drag-look)
+             moved on — e.g. "Masuk — Gemfund" lingering after the view
+             had turned to Siaprak. Skipped while dragging, while a sheet
+             covers the canvas, and for touch pointers. */
+          if (!dragging && hoverInside && hoverPointerType !== 'touch'
+              && !menuSheet.classList.contains('open') && !detailSheet.classList.contains('open')){
+            updateHover(raycastHover(), hoverClientX, hoverClientY);
+          }
           renderer.render(scene, camera);
         } catch(err){
           errBox.style.display = 'block';
