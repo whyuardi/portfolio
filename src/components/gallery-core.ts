@@ -527,6 +527,15 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         }
         else if (m.isMeshBasicMaterial && o.userData._colOrig !== undefined) m.color.setHex(o.userData._colOrig);
       }
+      /* Shared hover halo sprite (round 10): additive, so it reads as a
+         warm glow over any surface, bright or dark. The old emissive
+         tint alone was too subtle on bright materials under ACES to
+         read as a glow at all. */
+      var glowSprite = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: dotSprite(), color: 0xffa63d, transparent: true, opacity: 0,
+        blending: THREE.AdditiveBlending, depthWrite: false }));
+      glowSprite.renderOrder = 5;
+      scene.add(glowSprite);
       function updateHover(hit, x, y){
         var key = hit ? hit.type + ':' + hit.id : null;
         if (key !== hoverKey){
@@ -542,6 +551,25 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
               var h = o.userData.hit;
               if (h && (h.type + ':' + h.id) === key) applyGlow(o);
             });
+            /* Round 10: place the halo on the hovered group (world-space
+               sprite, so it stays glued to the object while the camera
+               moves). Sized from the group's bounding box. */
+            var box = new THREE.Box3();
+            var any = false;
+            clickables.forEach(function(o){
+              var h = o.userData.hit;
+              if (h && (h.type + ':' + h.id) === key){ box.expandByObject(o); any = true; }
+            });
+            if (any){
+              var c = box.getCenter(new THREE.Vector3());
+              var s = box.getSize(new THREE.Vector3());
+              var m = Math.max(s.x, s.y, s.z);
+              glowSprite.position.copy(c);
+              glowSprite.scale.setScalar(Math.min(6, Math.max(1.6, m * 1.7)));
+              glowSprite.material.opacity = 0.5;
+            }
+          } else {
+            glowSprite.material.opacity = 0;
           }
         }
         if (tip){
@@ -807,7 +835,8 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
          room-to-room flights so the camera passes through the hall centre
          and never clips a room wall. */
       function flyTo(pos, tgt, dur, done, midP, midT){
-        transit = { t:0, dur:dur, fromP:camPos.clone(), fromT:camTarget.clone(),
+        transit = { t:0, dur:dur, startAt: performance.now(),
+                    fromP:camPos.clone(), fromT:camTarget.clone(),
                     toP:pos.clone(), toT:tgt.clone(), done:done,
                     midP: midP ? midP.clone() : null, midT: midT ? midT.clone() : null };
         mode = 'transit';
@@ -832,8 +861,14 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
          already standing in the target room. */
       function goRoom(id, fromTour){
         var p = byId(id), r = rooms[id];
-        if (!p || !r || mode === 'transit') return false;
+        if (!p || !r) return false;
         if (mode === 'room' && currentRoom === id) return true;
+        /* Round 10: a flight already in progress no longer swallows the
+           request — the old `mode === 'transit'` early-return silently
+           dropped every dot/keyboard/arch click made mid-flight, so the
+           label (and the camera) only answered when the old flight
+           landed. Now the flight is retargeted from the camera's
+           current position and the label fires instantly, every time. */
         if (tour && !fromTour) stopTour();
         closeMenu();
         closeDetail();
@@ -861,16 +896,14 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
             tour.timer = setTimeout(tourStep, 6500);
           }
         };
-        if (mode === 'room'){
-          /* room-to-room: swing through the hall on a path offset to the
-             side of the centre statue. The old waypoint sat directly
-             above the plinth (0, 2.4, 0) and looked straight down at it
-             (0, 1.0, 0), so the statue filled the screen mid-flight.
-             The new waypoint sits 1.8 units out along the bisector
+        if (currentRoom){
+          /* room-to-room (or retargeted mid-flight between rooms): swing
+             through the hall on a path offset to the side of the centre
+             statue. The waypoint sits 1.8 units out along the bisector
              between the two rooms, 3 m up, and looks outward along the
              same bisector — at the midpoint the statue is behind the
-             camera. Each arch crossing stays well inside its opening
-             (worst offset ~0.06 rad vs ~0.10 rad half-width). */
+             camera. `currentRoom` (not `mode`) decides this branch, so a
+             retarget issued mid-flight still takes the offset path. */
           var src = byId(currentRoom);
           var aMid = ((src ? src.angle : 0) + p.angle) / 2;
           var midDir = new THREE.Vector3(Math.sin(aMid), 0, -Math.cos(aMid));
@@ -888,7 +921,11 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         else goRoom(id);
       }
       function nextRoom(dir){
-        if (mode !== 'room' || !currentRoom) return;
+        /* Round 10: also allowed mid-flight between rooms (retargets,
+           like goRoom) — arrows pressed during a flight used to fall
+           through to a no-op yaw nudge. */
+        if (!currentRoom) return;
+        if (mode !== 'room' && mode !== 'transit') return;
         var order = PROJECTS.map(function(p){ return p.id; });
         var i = order.indexOf(currentRoom);
         if (i < 0) return;
@@ -1056,12 +1093,15 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         dragging = false;
         if (mode === 'transit') return;
         if (wasDrag){
-          /* fast horizontal flick inside a room = swipe to the next /
-             previous room (slow drags stay drag-look, as before). */
+          /* Round 10: a swipe is ONLY a deliberate fast flick — quick,
+             long, and clearly horizontal. The old thresholds (<400 ms,
+             >90 px, 2x) fired on ordinary look-around drags, so a drag
+             inside a room changed rooms while the same drag in the hall
+             only turned the camera. Slow drags stay drag-look. */
           if (mode === 'room'){
             var dt = performance.now() - downT;
             var sx = e.clientX - downX, sy = e.clientY - downY;
-            if (dt < 400 && Math.abs(sx) > 90 && Math.abs(sx) > Math.abs(sy) * 2){
+            if (dt < 300 && Math.abs(sx) > 120 && Math.abs(sx) > Math.abs(sy) * 3 && Math.abs(sy) < 60){
               stopTour();
               nextRoom(sx < 0 ? 1 : -1);
             }
@@ -1105,7 +1145,12 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
           });
 
           if (mode === 'transit' && transit){
-            transit.t += dt / transit.dur;
+            /* Round 10: flight progress runs on wall-clock time, not on
+               accumulated frame dt — the old dt clamp (0.05) stretched a
+               2.4 s flight to ~6 s of real time on a slow renderer, so
+               every label/tour timing looked broken there. A backgrounded
+               tab simply completes the flight on the next frame. */
+            transit.t = (performance.now() - transit.startAt) / (transit.dur * 1000);
             var k = Math.min(transit.t, 1);
             var e;
             if (transit.midP){
@@ -1199,7 +1244,7 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
           stopTour: stopTour,
           isTouring: function(){ return !!tour; },
           facingRoom: function(){ return hallBest ? hallBest.id : null; },
-          isInRoom: function(){ return mode === 'room'; },
+          isInRoom: function(){ return mode === 'room' || (mode === 'transit' && !!currentRoom); },
           currentRoomId: function(){ return currentRoom; },
           nudgeYaw: function(d){ targetYaw += d; lastInteract = performance.now(); },
           dispose: function(){
@@ -1215,5 +1260,11 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
 
   /* initial location for the dot nav: the hall */
   if (opts && opts.onLocation) opts.onLocation(null);
+  /* Build marker (round 10): lets a visual check confirm which build is
+     actually loaded, so a stale-cache check can never again be mistaken
+     for a failed fix. */
+  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r10';
+  var sceneEl = document.getElementById('scene');
+  if (sceneEl) sceneEl.dataset.build = 'r10';
   return gl;
 }
