@@ -1,14 +1,24 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { PROJECTS } from '@/lib/projects';
-import { startGallery } from './gallery-core';
+import { startGallery, type GalleryApi } from './gallery-core';
 
 export default function Gallery() {
+  const apiRef = useRef<GalleryApi | null>(null);
+  /* current location for the dot nav: null = hall, else the room id */
+  const [loc, setLoc] = useState<string | null>(null);
+  const [touring, setTouring] = useState(false);
+
   useEffect(() => {
-    const api = startGallery(PROJECTS);
+    const api = startGallery(PROJECTS, {
+      onLocation: (l) => setLoc(l),
+      onTourChange: (t) => setTouring(t),
+    });
+    apiRef.current = api;
     return () => {
       api?.dispose();
+      apiRef.current = null;
     };
   }, []);
 
@@ -31,6 +41,47 @@ export default function Gallery() {
       <button id="backBtn" className="chrome" type="button">
         ← Kembali
       </button>
+      <button
+        id="tourBtn"
+        className="chrome"
+        type="button"
+        aria-label={touring ? 'Hentikan tur otomatis' : 'Mulai tur otomatis'}
+        aria-pressed={touring}
+        onClick={() => {
+          const api = apiRef.current;
+          if (!api) return;
+          if (touring) api.stopTour();
+          else api.startTour();
+        }}
+      >
+        <span className="tour-ico">{touring ? '■' : '▶'}</span>
+        <span>{touring ? 'Stop' : 'Tur'}</span>
+      </button>
+      <nav id="roomNav" aria-label="Navigasi ruangan">
+        <button
+          type="button"
+          className={'nav-dot' + (loc === null ? ' active' : '')}
+          aria-label="Aula"
+          aria-current={loc === null ? true : undefined}
+          onClick={() => apiRef.current?.goTo(null)}
+        >
+          <i />
+          <span>Aula</span>
+        </button>
+        {PROJECTS.map((p) => (
+          <button
+            key={p.id}
+            type="button"
+            className={'nav-dot' + (loc === p.id ? ' active' : '')}
+            aria-label={p.name}
+            aria-current={loc === p.id ? true : undefined}
+            onClick={() => apiRef.current?.goTo(p.id)}
+          >
+            <i />
+            <span>{p.name}</span>
+          </button>
+        ))}
+      </nav>
       <div id="foot" className="chrome">
         © 2026 Ardhiansyah Wahyu Setyadi
       </div>
@@ -128,6 +179,16 @@ export default function Gallery() {
 
       <div id="errBox" role="alert" />
       <div id="fade" />
+
+      {/* cursor-following hover label (desktop) */}
+      <div id="tip" aria-hidden="true" />
+      {/* hall "enter" bar: shown when the camera faces a doorway */}
+      <div id="hallBar">
+        <button id="hallEnterBtn" type="button">
+          <span id="hallEnterLabel">Masuk</span>
+          <span className="arr">→</span>
+        </button>
+      </div>
     </>
   );
 }

@@ -8,13 +8,24 @@ import type { Project } from '../lib/projects';
 export type GalleryApi = {
   enterRoom: (id: string) => void;
   leaveRoom: () => void;
+  goTo: (id: string | null) => void;
+  nextRoom: (dir: number) => void;
+  startTour: () => void;
+  stopTour: () => void;
+  isTouring: () => boolean;
+  facingRoom: () => string | null;
   isInRoom: () => boolean;
   currentRoomId: () => string | null;
   nudgeYaw: (d: number) => void;
   dispose: () => void;
 };
 
-export function startGallery(projects: Project[]): GalleryApi {
+export type GalleryOptions = {
+  onLocation?: (loc: string | null) => void;
+  onTourChange?: (touring: boolean) => void;
+};
+
+export function startGallery(projects: Project[], opts?: GalleryOptions): GalleryApi {
   var PROJECTS = projects;
       var errBox = document.getElementById('errBox');
       window.addEventListener('error', function(e){
@@ -34,6 +45,10 @@ export function startGallery(projects: Project[]): GalleryApi {
       var roomTitleText = document.getElementById('roomTitleText');
       var menuSheet = document.getElementById('menu');
       var detailSheet = document.getElementById('detail');
+      var tip = document.getElementById('tip');
+      var hallBar = document.getElementById('hallBar');
+      var hallEnterBtn = document.getElementById('hallEnterBtn');
+      var hallEnterLabel = document.getElementById('hallEnterLabel');
       var detailObserver = null;
 
       function byId(id){ for (var i = 0; i < PROJECTS.length; i++) if (PROJECTS[i].id === id) return PROJECTS[i]; return null; }
@@ -47,9 +62,14 @@ export function startGallery(projects: Project[]): GalleryApi {
         else openDetail(id);
       }
       function leaveRoom(){ if (gl) gl.leaveRoom(); }
-      backBtn.addEventListener('click', leaveRoom);
+      backBtn.addEventListener('click', function(){ if (gl) gl.stopTour(); leaveRoom(); });
       document.getElementById('brand').addEventListener('click', function(){
-        closeMenu(); closeDetail(); if (gl && gl.isInRoom()) gl.leaveRoom();
+        if (gl) gl.stopTour(); closeMenu(); closeDetail(); if (gl && gl.isInRoom()) gl.leaveRoom();
+      });
+      /* hallBest lives inside initGallery; the API exposes it via facingRoom(). */
+      if (hallEnterBtn) hallEnterBtn.addEventListener('click', function(){
+        var id = gl && gl.facingRoom ? gl.facingRoom() : null;
+        if (id) enterRoom(id);
       });
 
       /* menu */
@@ -70,7 +90,7 @@ export function startGallery(projects: Project[]): GalleryApi {
       });
       function openMenu(){ menuSheet.classList.add('open'); menuSheet.scrollTop = 0; }
       function closeMenu(){ menuSheet.classList.remove('open'); }
-      document.getElementById('menuBtn').addEventListener('click', openMenu);
+      document.getElementById('menuBtn').addEventListener('click', function(){ if (gl) gl.stopTour(); openMenu(); });
       document.getElementById('menuClose').addEventListener('click', closeMenu);
 
       /* detail */
@@ -136,14 +156,17 @@ export function startGallery(projects: Project[]): GalleryApi {
 
       document.addEventListener('keydown', function(e){
         if (e.key === 'Escape'){
+          if (gl) gl.stopTour();
           if (detailSheet.classList.contains('open')) closeDetail();
           else if (menuSheet.classList.contains('open')) closeMenu();
           else if (gl && gl.isInRoom()) gl.leaveRoom();
         }
         if (menuSheet.classList.contains('open') || detailSheet.classList.contains('open')) return;
         if (!gl) return;
-        if (e.key === 'ArrowLeft') gl.nudgeYaw(-0.3);
-        if (e.key === 'ArrowRight') gl.nudgeYaw(0.3);
+        /* In a room, ←/→ step between rooms (eased flight through the
+           hall); in the hall they still nudge the view, as before. */
+        if (e.key === 'ArrowLeft'){ if (gl.isInRoom()){ gl.stopTour(); gl.nextRoom(-1); } else gl.nudgeYaw(-0.3); }
+        if (e.key === 'ArrowRight'){ if (gl.isInRoom()){ gl.stopTour(); gl.nextRoom(1); } else gl.nudgeYaw(0.3); }
       });
 
       /* ================= 3D GALLERY INIT ================= */
@@ -470,7 +493,58 @@ export function startGallery(projects: Project[]): GalleryApi {
       };
 
       var clickables = [];
-      function markClickable(obj, data){ obj.traverse(function(o){ if (o.isMesh){ o.userData.hit = data; clickables.push(o); } }); }
+      /* Clone each clickable mesh's material once: several groups share
+         materials (e.g. MAT.stone on the hall plinth and the Rolling slab),
+         and the hover glow below writes to the material — without the clone
+         a hovered sculpture would light the hall plinth too. */
+      function markClickable(obj, data){ obj.traverse(function(o){ if (o.isMesh){ o.userData.hit = data; if (o.material && !o.userData._matCloned){ o.material = o.material.clone(); o.userData._matCloned = true; } clickables.push(o); } }); }
+
+      /* ---- hover: tooltip + subtle glow on the hovered group ---- */
+      var hoverKey = null;
+      function applyGlow(o){
+        var m = o.material;
+        if (!m) return;
+        if (m.emissive){
+          if (o.userData._emOrig === undefined) o.userData._emOrig = m.emissive.getHex();
+          m.emissive.setHex(0x2e2110);
+        } else if (m.isMeshBasicMaterial){
+          if (o.userData._colOrig === undefined) o.userData._colOrig = m.color.getHex();
+          m.color.setHex(0xffe2ae);
+        }
+      }
+      function restoreGlow(o){
+        var m = o.material;
+        if (!m) return;
+        if (m.emissive && o.userData._emOrig !== undefined) m.emissive.setHex(o.userData._emOrig);
+        else if (m.isMeshBasicMaterial && o.userData._colOrig !== undefined) m.color.setHex(o.userData._colOrig);
+      }
+      function updateHover(hit, x, y){
+        var key = hit ? hit.type + ':' + hit.id : null;
+        if (key !== hoverKey){
+          if (hoverKey){
+            clickables.forEach(function(o){
+              var h = o.userData.hit;
+              if (h && (h.type + ':' + h.id) === hoverKey) restoreGlow(o);
+            });
+          }
+          hoverKey = key;
+          if (hit){
+            clickables.forEach(function(o){
+              var h = o.userData.hit;
+              if (h && (h.type + ':' + h.id) === key) applyGlow(o);
+            });
+          }
+        }
+        if (tip){
+          if (hit){
+            var p = byId(hit.id);
+            tip.textContent = (hit.type === 'enter' ? 'Masuk — ' : 'Lihat detail — ') + (p ? p.name : '');
+            tip.style.left = x + 'px';
+            tip.style.top = y + 'px';
+            tip.classList.add('show');
+          } else tip.classList.remove('show');
+        }
+      }
 
       /* ================= HALL ================= */
       var HALL_R = 9, HALL_H = 5.4;
@@ -713,11 +787,20 @@ export function startGallery(projects: Project[]): GalleryApi {
       var transit = null;
       var lastInteract = performance.now();
       var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      var mouseX = 0, mouseY = 0, parX = 0, parY = 0;
+
+      function notifyLocation(loc){ if (opts && opts.onLocation) opts.onLocation(loc); }
+      function notifyTour(t){ if (opts && opts.onTourChange) opts.onTourChange(t); }
 
       function ease(t){ return t < .5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3)/2; }
-      function flyTo(pos, tgt, dur, done){
+      /* Optional mid waypoint (midP/midT): the flight swings through it at
+         the halfway mark instead of cutting the straight chord — used for
+         room-to-room flights so the camera passes through the hall centre
+         and never clips a room wall. */
+      function flyTo(pos, tgt, dur, done, midP, midT){
         transit = { t:0, dur:dur, fromP:camPos.clone(), fromT:camTarget.clone(),
-                    toP:pos.clone(), toT:tgt.clone(), done:done };
+                    toP:pos.clone(), toT:tgt.clone(), done:done,
+                    midP: midP ? midP.clone() : null, midT: midT ? midT.clone() : null };
         mode = 'transit';
       }
       /* Hall framing, round 4: camera lower (y 1.6) and further back (z 3.6),
@@ -733,20 +816,44 @@ export function startGallery(projects: Project[]): GalleryApi {
         return { pos:base, tgt:d.multiplyScalar(10).add(base) };
       }
 
-      function enterRoom(id){
+      function goRoom(id){
         var p = byId(id), r = rooms[id];
         if (!p || !r || mode === 'transit') return;
+        if (mode === 'room' && currentRoom === id) return;
         closeMenu();
+        closeDetail();
+        hideHallBar();
         roomTitleText.textContent = p.world;
         roomTitle.classList.add('show');
         enterLabel.textContent = 'Jelajahi ' + p.name;
         actionBar.classList.add('show');
         backBtn.classList.add('show');
         hint.classList.add('hide');
-        flyTo(r.camPos, r.camTarget, reduced ? 0.4 : 1.9, function(){
+        var arrived = function(){
           mode = 'room'; currentRoom = id;
           tRoomYaw = 0; tRoomPitch = 0; roomYaw = 0; roomPitch = 0;
-        });
+          notifyLocation(id);
+        };
+        if (mode === 'room'){
+          /* room-to-room: swing through the hall centre so the camera
+             never clips a room wall on the straight chord between rooms. */
+          flyTo(r.camPos, r.camTarget, reduced ? 0.6 : 2.4, arrived,
+            new THREE.Vector3(0, 2.4, 0), new THREE.Vector3(0, 1.0, 0));
+        } else {
+          flyTo(r.camPos, r.camTarget, reduced ? 0.4 : 1.9, arrived);
+        }
+      }
+      function enterRoom(id){ goRoom(id); }
+      function goTo(id){
+        if (id === null || id === undefined) leaveRoom();
+        else goRoom(id);
+      }
+      function nextRoom(dir){
+        if (mode !== 'room' || !currentRoom) return;
+        var order = PROJECTS.map(function(p){ return p.id; });
+        var i = order.indexOf(currentRoom);
+        if (i < 0) return;
+        goRoom(order[(i + dir + order.length) % order.length]);
       }
       function leaveRoom(){
         /* Also allow aborting an in-flight entry: the back button is already
@@ -763,16 +870,78 @@ export function startGallery(projects: Project[]): GalleryApi {
         roomTitle.classList.remove('show');
         actionBar.classList.remove('show');
         backBtn.classList.remove('show');
-        flyTo(v.pos, v.tgt, reduced ? 0.4 : 1.7, function(){ mode = 'hall'; currentRoom = null; });
+        hideHallBar();
+        flyTo(v.pos, v.tgt, reduced ? 0.4 : 1.7, function(){ mode = 'hall'; currentRoom = null; notifyLocation(null); });
+      }
+
+      /* ---- hall "enter" bar: appears when the camera faces a doorway ---- */
+      var hallBest = null;
+      function hideHallBar(){
+        if (hallBar) hallBar.classList.remove('show');
+        if (mode === 'hall') hint.classList.remove('hide');
+      }
+      function updateHallBar(){
+        if (!hallBar) return;
+        if (mode !== 'hall' || tour){
+          if (hallBest){ hallBest = null; hideHallBar(); }
+          return;
+        }
+        if (menuSheet.classList.contains('open') || detailSheet.classList.contains('open')){
+          if (hallBest){ hallBest = null; hideHallBar(); }
+          return;
+        }
+        /* camera view direction vs each arch direction; cos(30°) ≈ 0.866 */
+        var dx = Math.sin(yaw), dz = -Math.cos(yaw);
+        var best = null, bestDot = 0.866;
+        PROJECTS.forEach(function(p){
+          var d = dx * Math.sin(p.angle) + dz * -Math.cos(p.angle);
+          if (d > bestDot){ bestDot = d; best = p; }
+        });
+        if (!best){
+          if (hallBest){ hallBest = null; hideHallBar(); }
+          return;
+        }
+        if (!hallBest || hallBest.id !== best.id){
+          hallBest = best;
+          if (hallEnterLabel) hallEnterLabel.textContent = 'Masuk — ' + best.name;
+          hallBar.classList.add('show');
+          hint.classList.add('hide');
+        }
+      }
+
+      /* ---- auto tour: walks the three rooms in order, then returns ---- */
+      var tour = null;
+      function startTour(){
+        stopTour();
+        tour = { step: 0, timer: 0 };
+        notifyTour(true);
+        tourStep();
+      }
+      function tourStep(){
+        if (!tour) return;
+        var order = PROJECTS.map(function(p){ return p.id; });
+        if (tour.step >= order.length){ stopTour(); leaveRoom(); return; }
+        goRoom(order[tour.step]);
+        tour.step++;
+        tour.timer = setTimeout(tourStep, 6500);
+      }
+      function stopTour(){
+        if (!tour) return;
+        clearTimeout(tour.timer);
+        tour = null;
+        notifyTour(false);
       }
       /* ================= POINTER: drag-look + click ================= */
       var dragging = false, moved = 0, lastX = 0, lastY = 0;
+      var downX = 0, downY = 0, downT = 0;
       var raycaster = new THREE.Raycaster();
       var ndc = new THREE.Vector2();
       var el = renderer.domElement;
 
       el.addEventListener('pointerdown', function(e){
         dragging = true; moved = 0; lastX = e.clientX; lastY = e.clientY;
+        downX = e.clientX; downY = e.clientY; downT = performance.now();
+        if (tip) tip.classList.remove('show');
         el.setPointerCapture(e.pointerId);
       });
       el.addEventListener('pointermove', function(e){
@@ -789,17 +958,37 @@ export function startGallery(projects: Project[]): GalleryApi {
             tRoomPitch = THREE.MathUtils.clamp(tRoomPitch - dy * 0.002, -0.16, 0.2);
           }
         } else {
-          /* hover cursor */
+          /* hover: cursor + tooltip + subtle glow on the hovered group */
           ndc.set((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
+          mouseX = ndc.x; mouseY = ndc.y;
           raycaster.setFromCamera(ndc, camera);
           var hits = raycaster.intersectObjects(clickables, false);
-          el.style.cursor = hits.length ? 'pointer' : 'grab';
+          var hit = null;
+          if (hits.length){
+            var h0 = hits[0].object.userData.hit;
+            if (h0 && ((h0.type === 'enter' && mode === 'hall') || (h0.type === 'detail' && mode === 'room'))) hit = h0;
+          }
+          el.style.cursor = hit ? 'pointer' : 'grab';
+          updateHover(hit, e.clientX, e.clientY);
         }
       });
       el.addEventListener('pointerup', function(e){
         var wasDrag = moved > 7;
         dragging = false;
-        if (wasDrag || mode === 'transit') return;
+        if (mode === 'transit') return;
+        if (wasDrag){
+          /* fast horizontal flick inside a room = swipe to the next /
+             previous room (slow drags stay drag-look, as before). */
+          if (mode === 'room'){
+            var dt = performance.now() - downT;
+            var sx = e.clientX - downX, sy = e.clientY - downY;
+            if (dt < 400 && Math.abs(sx) > 90 && Math.abs(sx) > Math.abs(sy) * 2){
+              stopTour();
+              nextRoom(sx < 0 ? 1 : -1);
+            }
+          }
+          return;
+        }
         ndc.set((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
         raycaster.setFromCamera(ndc, camera);
         var hits = raycaster.intersectObjects(clickables, false);
@@ -810,6 +999,7 @@ export function startGallery(projects: Project[]): GalleryApi {
         else if (hit.type === 'detail' && mode === 'room') openDetail(hit.id);
       });
       el.addEventListener('pointercancel', function(){ dragging = false; });
+      el.addEventListener('pointerleave', function(){ updateHover(null, 0, 0); });
 
       /* ================= LOOP ================= */
       var clock = new THREE.Clock();
@@ -837,10 +1027,26 @@ export function startGallery(projects: Project[]): GalleryApi {
 
           if (mode === 'transit' && transit){
             transit.t += dt / transit.dur;
-            var k = ease(Math.min(transit.t, 1));
-            camPos.lerpVectors(transit.fromP, transit.toP, k);
-            camPos.y += Math.sin(k * Math.PI) * 0.25;
-            camTarget.lerpVectors(transit.fromT, transit.toT, k);
+            var k = Math.min(transit.t, 1);
+            var e;
+            if (transit.midP){
+              /* two-leg flight: from -> mid for k in [0, .5), mid -> to
+                 for k in [.5, 1]; eased on each leg so the join is smooth. */
+              if (k < 0.5){
+                e = ease(k * 2) / 2;
+                camPos.lerpVectors(transit.fromP, transit.midP, e * 2);
+                camTarget.lerpVectors(transit.fromT, transit.midT, e * 2);
+              } else {
+                e = 0.5 + ease((k - 0.5) * 2) / 2;
+                camPos.lerpVectors(transit.midP, transit.toP, (e - 0.5) * 2);
+                camTarget.lerpVectors(transit.midT, transit.toT, (e - 0.5) * 2);
+              }
+            } else {
+              e = ease(k);
+              camPos.lerpVectors(transit.fromP, transit.toP, e);
+              camTarget.lerpVectors(transit.fromT, transit.toT, e);
+            }
+            camPos.y += Math.sin(e * Math.PI) * 0.25;
             if (transit.t >= 1){ var done = transit.done; transit = null; done && done(); }
           } else if (mode === 'hall'){
             if (!dragging && !reduced && performance.now() - lastInteract > 5000) targetYaw += dt * 0.03;
@@ -849,17 +1055,25 @@ export function startGallery(projects: Project[]): GalleryApi {
             var v = hallView();
             camPos.copy(v.pos); camTarget.copy(v.tgt);
             camPos.y = 1.6 + Math.sin(t * 0.5) * (reduced ? 0 : 0.03);
+            updateHallBar();
           } else if (mode === 'room' && currentRoom){
             var r = rooms[currentRoom];
             roomYaw += (tRoomYaw - roomYaw) * Math.min(1, dt * 5);
             roomPitch += (tRoomPitch - roomPitch) * Math.min(1, dt * 5);
+            if (!reduced){
+              /* gentle mouse parallax: the view leans a touch toward the
+                 cursor, plus a slow breathing so the room never feels dead. */
+              parX += ((mouseX * 0.14) - parX) * Math.min(1, dt * 3);
+              parY += ((mouseY * 0.09) - parY) * Math.min(1, dt * 3);
+            }
             camPos.copy(r.camPos);
+            if (!reduced) camPos.y += Math.sin(t * 0.5) * 0.02;
             var off = r.camTarget.clone().sub(r.camPos);
             var ang = Math.atan2(off.x, off.z) + roomYaw;
             var len = Math.sqrt(off.x*off.x + off.z*off.z);
             camTarget.set(
-              r.camPos.x + Math.sin(ang) * len,
-              r.camTarget.y + roomPitch * 3,
+              r.camPos.x + Math.sin(ang) * len + parX,
+              r.camTarget.y + roomPitch * 3 + parY,
               r.camPos.z + Math.cos(ang) * len
             );
           }
@@ -890,10 +1104,17 @@ export function startGallery(projects: Project[]): GalleryApi {
         return {
           enterRoom: enterRoom,
           leaveRoom: leaveRoom,
+          goTo: goTo,
+          nextRoom: nextRoom,
+          startTour: startTour,
+          stopTour: stopTour,
+          isTouring: function(){ return !!tour; },
+          facingRoom: function(){ return hallBest ? hallBest.id : null; },
           isInRoom: function(){ return mode === 'room'; },
           currentRoomId: function(){ return currentRoom; },
           nudgeYaw: function(d){ targetYaw += d; lastInteract = performance.now(); },
           dispose: function(){
+            stopTour();
             disposed = true;
             if (rafId) cancelAnimationFrame(rafId);
             try { renderer.dispose(); } catch (e) { /* noop */ }
@@ -903,5 +1124,7 @@ export function startGallery(projects: Project[]): GalleryApi {
       }
 
 
+  /* initial location for the dot nav: the hall */
+  if (opts && opts.onLocation) opts.onLocation(null);
   return gl;
 }

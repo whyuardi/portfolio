@@ -55,6 +55,49 @@
         font-size:.68rem; letter-spacing:.14em; color:var(--ink-soft); pointer-events:none;
       }
 
+      /* ---------- room dot navigation (right edge) ---------- */
+      #roomNav{
+        position:fixed; right:1.1rem; top:50%; transform:translateY(-50%);
+        z-index:20; display:flex; flex-direction:column; gap:.55rem; align-items:center;
+      }
+      .nav-dot{
+        position:relative; width:1.9rem; height:1.9rem; min-height:1.9rem;
+        background:none; border:0; padding:0; display:flex; align-items:center; justify-content:center;
+      }
+      .nav-dot i{
+        width:9px; height:9px; border-radius:50%; display:block;
+        background:rgba(250,247,239,.85); border:1.5px solid rgba(46,42,34,.55);
+        transition:transform .25s ease, background .25s ease, box-shadow .25s ease;
+        box-shadow:0 1px 4px rgba(46,42,34,.25);
+      }
+      .nav-dot:hover i, .nav-dot:focus-visible i{ transform:scale(1.35); }
+      .nav-dot.active i{
+        background:var(--amber); border-color:var(--amber); transform:scale(1.45);
+        box-shadow:0 0 0 4px rgba(185,124,38,.25);
+      }
+      .nav-dot span{
+        position:absolute; right:2.3rem; top:50%; transform:translateY(-50%) translateX(4px);
+        background:rgba(23,20,16,.92); color:#f5f1e6; font-size:.72rem; font-weight:700; letter-spacing:.08em;
+        padding:.42rem .75rem; border-radius:999px; white-space:nowrap;
+        opacity:0; pointer-events:none; transition:opacity .18s ease, transform .18s ease;
+      }
+      .nav-dot:hover span, .nav-dot:focus-visible span{ opacity:1; transform:translateY(-50%) translateX(0); }
+      /* the active room's label stays visible: it is the position indicator */
+      .nav-dot.active span{ opacity:1; transform:translateY(-50%) translateX(0); background:var(--amber); }
+
+      /* ---------- auto-tour toggle (top-right, under Menu) ---------- */
+      #tourBtn{
+        top:4.6rem; right:1.2rem; display:flex; align-items:center; gap:.5rem;
+        background:rgba(250,247,239,.85); backdrop-filter:blur(6px);
+        border:1px solid var(--line); border-radius:999px;
+        padding:.5rem .95rem; font-size:.74rem; font-weight:700; letter-spacing:.18em; text-transform:uppercase;
+        color:var(--ink); box-shadow:0 6px 18px rgba(46,42,34,.12);
+        transition:background .2s ease, color .2s ease;
+      }
+      #tourBtn:hover{ background:#171410; color:#f5f1e6; }
+      #tourBtn[aria-pressed="true"]{ background:#171410; color:#f5f1e6; }
+      #tourBtn .tour-ico{ font-size:.62rem; }
+
       /* big room title, like the reference's in-room serif headline */
       #roomTitle{
         position:fixed; inset:0; z-index:10; display:flex; align-items:center; justify-content:center;
