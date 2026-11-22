@@ -238,8 +238,6 @@ export function startGallery(projects: Project[]): GalleryApi {
           }
           g.fillStyle = 'rgba(90,64,38,.4)';
           g.fillRect(0, y + h/rows - 2, w, 2);
-          var seam = Math.random() * w;
-          g.fillRect(seam, y, 2, h/rows - 2);
         }
         /* fine speckle so the floor is not a flat wash up close */
         for (var s2 = 0; s2 < 2600; s2++){
@@ -248,19 +246,19 @@ export function startGallery(projects: Project[]): GalleryApi {
         }
       }, 6, 6);
       var wallTex = canvasTex(1024, 512, function(g, w, h){
-        g.fillStyle = '#ede5d5'; g.fillRect(0,0,w,h);
-        /* plaster grain: faint speckle + vertical streaks so the wall reads as a surface */
-        for (var n = 0; n < 2400; n++){
-          g.fillStyle = 'rgba(120,100,70,' + (0.02 + Math.random()*0.05) + ')';
-          g.fillRect(Math.random()*w, Math.random()*h, 1.5, 1.5);
+        g.fillStyle = '#e9dcc2'; g.fillRect(0,0,w,h);
+        /* plaster grain: speckle + vertical streaks so the wall reads as a surface */
+        for (var n = 0; n < 3600; n++){
+          g.fillStyle = 'rgba(120,100,70,' + (0.05 + Math.random()*0.08) + ')';
+          g.fillRect(Math.random()*w, Math.random()*h, 2.5, 2.5);
         }
-        for (var v = 0; v < 26; v++){
-          g.strokeStyle = 'rgba(120,100,70,' + (0.02 + Math.random()*0.03) + ')';
+        for (var v = 0; v < 30; v++){
+          g.strokeStyle = 'rgba(120,100,70,' + (0.03 + Math.random()*0.04) + ')';
           g.lineWidth = 2 + Math.random()*5;
           var vx = Math.random()*w;
           g.beginPath(); g.moveTo(vx, 0); g.lineTo(vx + (Math.random()*14-7), h); g.stroke();
         }
-        g.strokeStyle = 'rgba(122,102,74,.17)'; g.lineWidth = 8;
+        g.strokeStyle = 'rgba(122,102,74,.22)'; g.lineWidth = 8;
         /* Each arc is drawn three times (x-w, x, x+w) so the motif tiles
            seamlessly — before, the repeat seam showed as a vertical line. */
         for (var i = -4; i < 14; i++){
@@ -312,6 +310,46 @@ export function startGallery(projects: Project[]): GalleryApi {
         t.colorSpace = THREE.SRGBColorSpace;
         t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
         return t;
+      }
+      /* granite-ish speckle for the stone knot: flat colour read as plastic */
+      var stoneTex = (function(){
+        var c = document.createElement('canvas'); c.width = c.height = 256;
+        var g = c.getContext('2d');
+        g.fillStyle = '#b3a184'; g.fillRect(0, 0, 256, 256);
+        for (var i = 0; i < 2600; i++){
+          var v = Math.random();
+          g.fillStyle = v < 0.5 ? 'rgba(70,58,40,' + (0.08 + Math.random()*0.16) + ')'
+                                : 'rgba(235,225,200,' + (0.08 + Math.random()*0.14) + ')';
+          g.fillRect(Math.random()*256, Math.random()*256, 1 + Math.random()*2.2, 1 + Math.random()*2.2);
+        }
+        for (var j = 0; j < 9; j++){
+          g.strokeStyle = 'rgba(80,66,44,' + (0.1 + Math.random()*0.12) + ')';
+          g.lineWidth = 1 + Math.random();
+          g.beginPath();
+          var sx = Math.random()*256, sy = Math.random()*256;
+          g.moveTo(sx, sy);
+          g.bezierCurveTo(sx + 40, sy + (Math.random()*40-20), sx + 90, sy + (Math.random()*40-20), sx + 140, sy + (Math.random()*30-15));
+          g.stroke();
+        }
+        var t = new THREE.CanvasTexture(c);
+        t.colorSpace = THREE.SRGBColorSpace;
+        t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(2, 2);
+        t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+        return t;
+      })();
+      /* soft fake contact shadow: grounds a plinth where no shadow light reaches */
+      var contactTex = (function(){
+        var c = document.createElement('canvas'); c.width = c.height = 256;
+        var g = c.getContext('2d');
+        var rg = g.createRadialGradient(128, 128, 8, 128, 128, 128);
+        rg.addColorStop(0, 'rgba(24,16,8,0.5)'); rg.addColorStop(0.65, 'rgba(24,16,8,0.22)'); rg.addColorStop(1, 'rgba(24,16,8,0)');
+        g.fillStyle = rg; g.fillRect(0, 0, 256, 256);
+        return new THREE.CanvasTexture(c);
+      })();
+      function contactShadow(x, y, z, r, parent){
+        var m = new THREE.Mesh(new THREE.PlaneGeometry(r*2, r*2),
+          new THREE.MeshBasicMaterial({ map: contactTex, transparent:true, depthWrite:false }));
+        m.rotation.x = -Math.PI/2; m.position.set(x, y, z); parent.add(m);
       }
       function dotSprite(){
         var c = document.createElement('canvas'); c.width = c.height = 64;
@@ -369,19 +407,17 @@ export function startGallery(projects: Project[]): GalleryApi {
         new THREE.MeshBasicMaterial({ map: skyTex }));
       sky.rotation.x = Math.PI/2; sky.position.y = HALL_H + 0.72;
       hall.add(sky);
-      for (var b = 0; b < 3; b++){
-        var beam = new THREE.Mesh(new THREE.BoxGeometry(6.4, 0.16, 0.3), MAT.woodDark);
-        beam.position.y = HALL_H + 0.42; beam.rotation.y = b * Math.PI/3;
-        beam.castShadow = true;
-        hall.add(beam);
-      }
+      var oculusRing = new THREE.Mesh(new THREE.TorusGeometry(3.12, 0.07, 12, 72), MAT.woodDark);
+      oculusRing.rotation.x = Math.PI/2; oculusRing.position.y = HALL_H + 0.06;
+      hall.add(oculusRing);
 
       /* center plinth + rotating stone knot */
       var plinth = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.95, 0.5, 40), MAT.stone);
       plinth.position.y = 0.25; plinth.castShadow = plinth.receiveShadow = true;
       hall.add(plinth);
+      contactShadow(0, 0.006, 0, 1.5, hall);
       var knot = new THREE.Mesh(new THREE.TorusKnotGeometry(0.34, 0.12, 120, 16),
-        new THREE.MeshStandardMaterial({ color:0xb9a888, roughness:.55 }));
+        new THREE.MeshStandardMaterial({ map:stoneTex, bumpMap:stoneTex, bumpScale:0.6, roughness:.85 }));
       knot.scale.setScalar(0.62);
       knot.position.y = 0.82; knot.castShadow = true;
       hall.add(knot);
@@ -541,6 +577,7 @@ export function startGallery(projects: Project[]): GalleryApi {
 
         var rPlinth = new THREE.Mesh(new THREE.CylinderGeometry(1.05, 1.12, 0.14, 44), MAT.plinth);
         rPlinth.position.set(0, 0.07, -0.4); rPlinth.castShadow = rPlinth.receiveShadow = true; room.add(rPlinth);
+        contactShadow(0, 0.006, -0.4, 1.7, room);
         var sculpt = buildSculpture(p);
         sculpt.position.set(0, 0.14, -0.4); room.add(sculpt);
         markClickable(sculpt, { type:'detail', id:p.id });
@@ -556,9 +593,9 @@ export function startGallery(projects: Project[]): GalleryApi {
       /* ================= CAMERA RIG ================= */
       var mode = 'hall';           // 'hall' | 'room' | 'transit'
       var currentRoom = null;
-      var yaw = 0.12, pitch = 0.06, targetYaw = 0.12, targetPitch = 0.06;
+      var yaw = 0.12, pitch = 0.10, targetYaw = 0.12, targetPitch = 0.10;
       var roomYaw = 0, roomPitch = 0, tRoomYaw = 0, tRoomPitch = 0;
-      var camPos = new THREE.Vector3(0, 1.9, 2.6), camTarget = new THREE.Vector3();
+      var camPos = new THREE.Vector3(0, 1.9, 3.1), camTarget = new THREE.Vector3();
       var transit = null;
       var lastInteract = performance.now();
       var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -570,7 +607,7 @@ export function startGallery(projects: Project[]): GalleryApi {
         mode = 'transit';
       }
       function hallView(){
-        var base = new THREE.Vector3(0, 1.9, 2.6);
+        var base = new THREE.Vector3(0, 1.9, 3.1);
         var d = new THREE.Vector3(Math.sin(yaw)*Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw)*Math.cos(pitch));
         return { pos:base, tgt:d.multiplyScalar(10).add(base) };
       }
@@ -579,15 +616,15 @@ export function startGallery(projects: Project[]): GalleryApi {
         var p = byId(id), r = rooms[id];
         if (!p || !r || mode === 'transit') return;
         closeMenu();
+        roomTitleText.textContent = p.world;
+        roomTitle.classList.add('show');
+        enterLabel.textContent = 'Jelajahi ' + p.name;
+        actionBar.classList.add('show');
+        backBtn.classList.add('show');
+        hint.classList.add('hide');
         flyTo(r.camPos, r.camTarget, reduced ? 0.4 : 1.9, function(){
           mode = 'room'; currentRoom = id;
           tRoomYaw = 0; tRoomPitch = 0; roomYaw = 0; roomPitch = 0;
-          roomTitleText.textContent = p.world;
-          roomTitle.classList.add('show');
-          enterLabel.textContent = 'Jelajahi ' + p.name;
-          actionBar.classList.add('show');
-          backBtn.classList.add('show');
-          hint.classList.add('hide');
         });
       }
       function leaveRoom(){
