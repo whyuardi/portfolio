@@ -239,6 +239,16 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
          render per frame saved in every room. */
       renderer.shadowMap.autoUpdate = false;
       renderer.shadowMap.needsUpdate = true;
+      /* Round 29: renderer.info must count the WHOLE frame for the FPS
+         overlay. EffectComposer renders several times per frame
+         (transmission pass, render pass, bloom/bokeh/grade/output
+         quads), and info.autoReset (default true) zeroes the counters
+         after every internal render — so after composer.render() the
+         numbers would describe only the last fullscreen quad (1 call,
+         2 triangles). With autoReset off the counters accumulate
+         across the frame; animate() resets them once per frame just
+         before composer.render(). Nothing else reads renderer.info. */
+      renderer.info.autoReset = false;
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
       renderer.toneMappingExposure = 1.32;
       if ('outputColorSpace' in renderer) renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -283,7 +293,15 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
           tDiffuse: { value: null },
           uTime: { value: 0 },
           uVig: { value: 0.22 },
-          uGrain: { value: 0.018 }
+          /* Round 29: grain 0.018 -> 0.006. The per-pixel hash noise
+             is sprayed over the whole image every frame (animated by
+             uTime), and on the big cream walls it reads as sandpaper
+             — a literal "kasar" (rough) look, which is what the user
+             reported 08:39 WIB ("grafik masih kasar"). 0.006 keeps a
+             whisper of filmic texture so flat areas don't band, but
+             the noise stops being visible as dirt. Perf-neutral: the
+             hash runs either way, only its amplitude changes. */
+          uGrain: { value: 0.006 }
         },
         vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
         fragmentShader: [
@@ -310,9 +328,20 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
          + MSAA resolve together). 2x keeps edges clean on this
          scene's large soft shapes — the grade pass and DOF soften
          them further — at roughly half the resolve cost. Revert
-         candidate if the visual check finds jaggies. */
-      composer.renderTarget1.samples = 2;
-      composer.renderTarget2.samples = 2;
+         candidate if the visual check finds jaggies.
+         Round 29: reverted 2 -> 4. The user (08:39 WIB) reports
+         the graphics still look rough ("grafik masih kasar"), and the
+         r20 reasoning was written for the checker's software
+         renderer, where every MSAA sample is paid in full. On a
+         real GPU the resolve cost of 4x on these targets is small
+         next to the transmission pass (which is 4x MSAA HalfFloat
+         regardless, hard-coded in three r170), and the edge
+         quality is the most visible roughness left once the grade
+         grain is cut (see GradeShader uGrain, r29). Measured in
+         the local SwiftShader harness — see the r29 commit message
+         for the before/after frame numbers before judging the cost. */
+      composer.renderTarget1.samples = 4;
+      composer.renderTarget2.samples = 4;
       composer.addPass(new RenderPass(scene, camera));
       /* Bloom, round 20 — DIAGNOSIS (Node probe, three r170's exact
          punctual-light formulas): the r19 threshold 0.9 was BELOW
@@ -2063,6 +2092,37 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
            all, so this is proven in code only until a real mouse
            wheel is tried. */
         var dy = e.deltaY * (e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? window.innerHeight : 1);
+        /* Round 29: WHEEL AUDIT (code read, 24 Nov). What is correct
+           and stays untouched:
+           (a) deltaMode normalisation above — lines x40 px, pages x
+               viewport height — matches the de-facto standard
+               (normalize-wheel: PIXEL_STEP 10, LINE_HEIGHT 40).
+           (b) DIRECTION — hall +dy (down = FOV up = WIDEN), room
+               -dy (down = dolly OUT, tDolly down). The two agree
+               (both "zoom out" on wheel-down) and the hall sign is
+               the r20 formula, restored in r23 after the r21/r22
+               checker evidence proved the observed direction is set
+               by the checker's scroll delivery, not the code. DO NOT
+               flip either sign on a checker's say-so again; only a
+               physical mouse adjudicates it.
+           (c) SMOOTHING — hallFov and tDolly are targets; animate
+               lerps the live values toward them at dt*6, so a notch
+               never snaps the view. Consistent with the drag fling,
+               which is also velocity-capped (see pointermove).
+           The one gap found: unlike the drag fling (velocity clamped
+               to ±3.5 rad/s "so a wild fling cannot spin the room"),
+               the wheel had NO per-event cap — a trackpad momentum
+               flick can deliver a single event with a huge deltaY
+               (hundreds to thousands of px, or a full page in
+               deltaMode 2), slamming tHallFov/tDolly to the end stop
+               in one event. The visible lerp softens the motion, but
+               the glide then runs the full range long after the
+               flick. Fix: clamp the normalised delta to ±300 px per
+               event (~2.5 mouse notches: hall max 2.4 deg/event,
+               room max 0.36 m/event). A physical notch (~100-120 px)
+               is far below the cap, so real-mouse feel is unchanged;
+               only violent flicks are tamed. */
+        dy = THREE.MathUtils.clamp(dy, -300, 300);
         if (mode === 'room'){
           tDolly = THREE.MathUtils.clamp(tDolly - dy * 0.0012, 0, 1.7);
         } else if (mode === 'hall'){
@@ -2093,6 +2153,29 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
 
       /* ================= LOOP ================= */
       var clock = new THREE.Clock();
+      /* Round 29: FPS overlay state. The animation dt above is
+         clamped to 0.05 s (for stable easing), so it CANNOT measure
+         real frame rate — the overlay uses raw wall-clock deltas
+         between rAF callbacks instead (lastFrameT). A single EMA of
+         the frame time (0.08/frame) is the source of truth; FPS is
+         derived from it (1000/ms) so the two numbers can never
+         disagree while the average is still warming up. The DOM is
+         written at most every 500 ms and only via textContent, so
+         there is no layout thrash. A frame slower than 1 s (a
+         backgrounded tab, or a software renderer at ~6 s/frame)
+         is clamped to 1000 ms for the average instead of being
+         skipped — skipping would leave the overlay showing only the
+         rare fast ticks (e.g. "3 fps / 303 ms" while the true
+         frame time is ~6 s); clamping floors the display at an
+         honest "1 fps / 1000 ms". */
+      var msEma = 0, lastFrameT = 0, fpsWriteT = 0;
+      function writeFpsStats(){
+        var el = document.getElementById('fpsFps'); if (!el) return;
+        el.textContent = msEma > 0 ? String(Math.round(1000 / msEma)) : '—';
+        var msEl = document.getElementById('fpsMs'); if (msEl) msEl.textContent = msEma > 0 ? msEma.toFixed(1) : '—';
+        var cEl = document.getElementById('fpsCalls'); if (cEl) cEl.textContent = String(renderer.info.render.calls);
+        var tEl = document.getElementById('fpsTris'); if (tEl) tEl.textContent = renderer.info.render.triangles.toLocaleString('en-US');
+      }
       var rafId = 0;
       var disposed = false;
       function animate(){
@@ -2101,6 +2184,20 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
         try {
           var dt = Math.min(clock.getDelta(), 0.05);
           var t = clock.elapsedTime;
+
+          /* Round 29: raw frame time for the FPS overlay (see the
+             state block above the loop). dt is clamped, so it would
+             report a fake 20 fps in a slow renderer — use the real
+             wall-clock gap between rAF callbacks instead. */
+          var nowMs = performance.now();
+          if (lastFrameT > 0){
+            var rawDt = (nowMs - lastFrameT) / 1000;
+            if (rawDt > 0){
+              var instMs = Math.min(rawDt * 1000, 1000);
+              msEma = msEma > 0 ? msEma + (instMs - msEma) * 0.08 : instMs;
+            }
+          }
+          lastFrameT = nowMs;
 
           /* Round 18: the statues stand still — Nagi's do. The hall
              knot no longer turns or wobbles and the sculptures no
@@ -2388,7 +2485,13 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
           bloomPass.enabled = !gemOn;
           bloomPass.strength = gemOn ? 0.08 : 0.15;
           gradePass.uniforms['uTime'].value = t;
+          /* Round 29: reset the frame counters here (see the
+             autoReset note at the renderer) so the FPS overlay reads
+             this frame's real totals, then write the overlay at most
+             every 500 ms of wall time. */
+          renderer.info.reset();
           composer.render();
+          if (nowMs - fpsWriteT >= 500){ fpsWriteT = nowMs; writeFpsStats(); }
         } catch(err){
           errBox.style.display = 'block';
           errBox.textContent = 'Galeri 3D tersendat: ' + err.message + '. Daftar proyek tetap bisa dibuka lewat tombol Menu.';
@@ -2444,8 +2547,8 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
   /* Build marker (round 13): lets a visual check confirm which build is
      actually loaded, so a stale-cache check can never again be mistaken
      for a failed fix. */
-  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r28';
+  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r29';
   var sceneEl = document.getElementById('scene');
-  if (sceneEl) sceneEl.dataset.build = 'r28';
+  if (sceneEl) sceneEl.dataset.build = 'r29';
   return gl;
 }

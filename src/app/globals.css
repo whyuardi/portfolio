@@ -98,6 +98,33 @@
       #tourBtn[aria-pressed="true"]{ background:#171410; color:#f5f1e6; }
       #tourBtn .tour-ico{ font-size:.62rem; }
 
+      /* Round 29: live render stats (FPS overlay). Top-left, under the
+         brand — the one corner no other chrome uses (Menu/tour are
+         top-right, dot nav is right-centre, hint/action/hall bars are
+         bottom-centre, back is bottom-left, foot is bottom-right).
+         pointer-events:none on the box so it can never swallow a canvas
+         drag; only the toggle button takes clicks. Collapsed state
+         hides the numbers and leaves the small FPS pill. */
+      #fpsBox{
+        top:4.9rem; left:1.4rem; display:flex; align-items:center; gap:.55rem;
+        background:rgba(250,247,239,.85); backdrop-filter:blur(6px);
+        border:1px solid var(--line); border-radius:999px;
+        padding:.34rem .8rem .34rem .45rem; pointer-events:none;
+        box-shadow:0 6px 18px rgba(46,42,34,.10);
+      }
+      #fpsToggle{
+        pointer-events:auto; background:#171410; color:#f5f1e6; border:0;
+        border-radius:999px; padding:.28rem .6rem; min-height:0;
+        font-size:.62rem; font-weight:700; letter-spacing:.18em;
+      }
+      #fpsStats{
+        display:flex; gap:.7rem; font-size:.68rem; font-weight:600;
+        letter-spacing:.06em; color:var(--ink-soft); white-space:nowrap;
+        font-variant-numeric:tabular-nums;
+      }
+      #fpsStats b{ color:var(--ink); font-weight:700; }
+      #fpsBox.collapsed #fpsStats{ display:none; }
+
       /* big room title, like the reference's in-room serif headline */
       #roomTitle{
         position:fixed; inset:0; z-index:10; display:flex; align-items:center; justify-content:center;
@@ -310,6 +337,7 @@
         .about{ grid-template-columns:1fr; }
         #foot{ display:none; }
         #brand{ font-size:1.3rem; padding:.95rem 1.1rem; }
+        #fpsBox{ top:4.3rem; left:1.1rem; }
         .spec div{ grid-template-columns:8.2rem 1fr; }
         #hint{ font-size:.7rem; bottom:1.1rem; max-width:92vw; white-space:normal; text-align:center; }
         #actionBar{ bottom:1.1rem; width:calc(100vw - 2.4rem); }

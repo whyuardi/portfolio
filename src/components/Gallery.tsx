@@ -9,6 +9,9 @@ export default function Gallery() {
   /* current location for the dot nav: null = hall, else the room id */
   const [loc, setLoc] = useState<string | null>(null);
   const [touring, setTouring] = useState(false);
+  /* Round 29: FPS stats overlay — visible by default (user asked for
+     live stats), collapsible to a small pill via the toggle. */
+  const [fpsOpen, setFpsOpen] = useState(true);
 
   useEffect(() => {
     const api = startGallery(PROJECTS, {
@@ -29,6 +32,27 @@ export default function Gallery() {
       <button id="brand" className="chrome" type="button">
         Ardhiansyah<small>Portfolio · Yogyakarta</small>
       </button>
+      {/* Round 29: live render stats. Values are written by gallery-core
+          (see #fpsFps/#fpsMs/#fpsCalls/#fpsTris) at ~2 Hz so the text
+          never thrashes; the box itself is pointer-events:none except
+          the toggle, so it can never block a canvas drag. */}
+      <div id="fpsBox" className={'chrome' + (fpsOpen ? '' : ' collapsed')} aria-label="Statistik render">
+        <button
+          id="fpsToggle"
+          type="button"
+          aria-label={fpsOpen ? 'Sembunyikan statistik FPS' : 'Tampilkan statistik FPS'}
+          aria-expanded={fpsOpen}
+          onClick={() => setFpsOpen(!fpsOpen)}
+        >
+          FPS
+        </button>
+        <div id="fpsStats" aria-hidden={!fpsOpen}>
+          <span><b id="fpsFps">—</b> fps</span>
+          <span><b id="fpsMs">—</b> ms</span>
+          <span><b id="fpsCalls">—</b> draw</span>
+          <span><b id="fpsTris">—</b> tri</span>
+        </div>
+      </div>
       <button id="menuBtn" className="chrome" type="button" aria-haspopup="true">
         Menu{' '}
         <span className="dots">
