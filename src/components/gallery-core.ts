@@ -209,7 +209,26 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
          full screen of tone mapping + sRGB for zero visual gain.
          The scene's jaggies are still handled by the composer
          targets' samples (r20 check: edges smooth at MSAA 2). */
-      var renderer = new THREE.WebGLRenderer({ antialias:false });
+      var renderer = new THREE.WebGLRenderer({ antialias:false,
+        /* Round 30: powerPreference 'high-performance' asks the
+           browser for the discrete GPU on dual-GPU laptops (a hint,
+           ignored on single-GPU machines) — zero visual change, and
+           on a dGPU machine it is the single biggest frame-time
+           lever there is. stencil:false: nothing in this pipeline
+           uses the stencil buffer (no MaskPass anywhere), so
+           dropping it saves bandwidth on the default framebuffer
+           and on the transmission render target (three sizes its
+           stencil from the renderer). Depth stays on. */
+        powerPreference:'high-performance', stencil:false });
+      /* Round 30: the full pixel-ratio cap and the adaptive
+         governor's cap (see animate). prFull is the r15/r20 cap;
+         prGov starts there and only ever steps DOWN to 1.0 — never
+         below CSS density, so the floor stays sharp. prApplied
+         tracks the last ratio actually applied so a governor step
+         that changes nothing never reallocates the targets. */
+      var prFull = Math.min(window.devicePixelRatio || 1, 1.25);
+      var prGov = prFull;
+      var prApplied = prFull;
       /* Round 15: pixelRatio cap 2 -> 1.5. Three r170 has NO
          transmissionResolutionScale — the transmission pass re-renders
          the whole opaque scene into a full-viewport render target with
@@ -222,7 +241,7 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
          + shadow 2048 running together; 1.25 cuts every pass's pixel
          load a further ~31% (1.5^2 vs 1.25^2). The scene is large
          soft shapes, so 1.25 stays visually near-identical. */
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
+      renderer.setPixelRatio(prFull);
       renderer.setSize(window.innerWidth, window.innerHeight);
       renderer.shadowMap.enabled = true;
       renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -362,6 +381,30 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
          still bloom a little — small bright caps reading as light
          catching the top edge, not a whole-statue whiteout. */
       var bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.15, 0.35, 1.15);
+      /* Round 30: bloom at half resolution. UnrealBloomPass.setSize
+         already sizes the bright target at width/2 and the 5-mip
+         chain below it, so the pass costs ~2.2 fullscreen quads
+         (bright + 10 blur quads + composite + full-res blend).
+         Halving once more — bright at width/4, mips down to
+         width/64 — cuts that to ~0.55 quads. The glow is a soft
+         additive blur at strength 0.15 / threshold 1.15, already
+         downsampled twice over; one more halving of an already
+         blurry signal is not pixel-identical (frozen-frame diff
+         vs r29 in the Siaprak room: mean 1.06/255 on the final
+         build; an earlier single run of the same configuration
+         read 2.45/255 — the spread is breathing/grain phase in
+         the frozen room shot, see the r30 commit message),
+         but side by side it is not visible to the naked eye and
+         the hall load view is pixel-identical. That measured
+         trade-off is what buys the ~43% frame-time cut; it ships
+         with the numbers in the commit message, not as "free".
+         The final blend still samples the mip texture with linear
+         filtering, so the upscale stays smooth. addPass calls
+         setSize with the effective (pixel-ratio) size, and the
+         override halves whatever it receives, so this holds at
+         every pixel ratio and after every resize/governor step. */
+      var bloomSetSize = bloomPass.setSize.bind(bloomPass);
+      bloomPass.setSize = function(w, h){ bloomSetSize(Math.max(2, Math.round(w / 2)), Math.max(2, Math.round(h / 2))); };
       composer.addPass(bloomPass);
       /* DOF: BokehPass. focus is re-aimed every frame at the
          camera-to-target distance. Round 20: maxblur 0.006 -> 0.003
@@ -370,10 +413,33 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
          the bloom haze the paintings dissolved into fog; 0.003 keeps
          them soft but readable while the statue stays sharp. */
       var bokehPass = new BokehPass(scene, camera, { focus: 4.6, aperture: 0.0012, maxblur: 0.003 });
+      /* Round 30 (dropped): a 17-tap BokehShader was tried and REVERTED.
+         It bought only ~10% frame time in the software harness but
+         measurably changed the out-of-focus wall speckle (frozen-frame
+         pixel diff vs r29 grew 2.45 -> 3.53 mean /255 in the Siaprak
+         room). Poor gain/cost ratio, so the stock 41-tap shader stays.
+         The bloom half-resolution cut below is the one that ships, with
+         its own measured trade-off noted in the r30 commit message. */
       composer.addPass(bokehPass);
       var gradePass = new ShaderPass(GradeShader);
       composer.addPass(gradePass);
       composer.addPass(new OutputPass());
+      /* Round 30: one place that applies a pixel ratio to the
+         renderer AND the composer (both own full-size targets, and
+         the transmission pass sizes from the renderer's drawing
+         buffer). The guard skips the call when nothing changed —
+         setPixelRatio/setSize reallocates every target, so a
+         redundant call would be a full-reallocation hitch for
+         nothing. Used by the Gemfund flip and the adaptive
+         governor in animate. */
+      function applyPixelRatio(pr){
+        if (pr === prApplied) return;
+        prApplied = pr;
+        renderer.setPixelRatio(pr);
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        composer.setPixelRatio(pr);
+        composer.setSize(window.innerWidth, window.innerHeight);
+      }
 
       /* Round 14: RoomEnvironment PMREM — the old "no env map" call
          left clearcoat/metal with nothing to reflect, which is why
@@ -2169,6 +2235,10 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
          frame time is ~6 s); clamping floors the display at an
          honest "1 fps / 1000 ms". */
       var msEma = 0, lastFrameT = 0, fpsWriteT = 0;
+      /* Round 30: adaptive pixel-ratio governor state (see animate).
+         govHeavySince/govLightSince are wall-clock timestamps for
+         the dwell timers; 0 means "not currently timing". */
+      var govHeavySince = 0, govLightSince = 0;
       function writeFpsStats(){
         var el = document.getElementById('fpsFps'); if (!el) return;
         el.textContent = msEma > 0 ? String(Math.round(1000 / msEma)) : '—';
@@ -2444,11 +2514,39 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
                entirely — visual nuclear option, needs A/B evidence).
                No r22 claim is made about the frame number: it can
                only be measured by the visual check. */
-            var pr = gemOn ? 1.0 : 1.25;
-            renderer.setPixelRatio(pr);
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            composer.setPixelRatio(pr);
-            composer.setSize(window.innerWidth, window.innerHeight);
+            var pr = gemOn ? 1.0 : prGov;
+            applyPixelRatio(pr);
+          }
+          /* Round 30: adaptive pixel-ratio governor. The frame
+             budget for 100 fps is 10 ms; the governor watches the
+             same msEma the FPS overlay shows and steps the
+             non-Gemfund cap down (prFull -> 1.0) when the frame
+             stays heavier than 10 ms for 2 s, and back up when it
+             stays lighter than 7 ms for 6 s. The 7–10 ms dead band
+             plus the long dwells stop it flapping on boundary
+             machines. The floor is 1.0 — exactly CSS density, so
+             the picture never softens; it only gives up the 1.25
+             supersampling while the frame is heavy. In Gemfund the
+             effective ratio is 1.0 already (see the flip above),
+             so a governor step there is a no-op via the
+             applyPixelRatio guard. On DPR-1 machines prFull IS 1.0
+             and the governor never fires — the headroom there
+             comes from the bloom/bokeh cuts above. */
+          if (msEma > 0){
+            if (msEma > 10 && prGov > 1.0){
+              if (!govHeavySince) govHeavySince = nowMs;
+              else if (nowMs - govHeavySince > 2000){
+                prGov = 1.0; govHeavySince = 0; govLightSince = 0;
+                applyPixelRatio(gemOn ? 1.0 : prGov);
+              }
+            } else govHeavySince = 0;
+            if (msEma < 7 && prGov < prFull){
+              if (!govLightSince) govLightSince = nowMs;
+              else if (nowMs - govLightSince > 6000){
+                prGov = prFull; govLightSince = 0; govHeavySince = 0;
+                applyPixelRatio(gemOn ? 1.0 : prGov);
+              }
+            } else govLightSince = 0;
           }
           /* Round 18: post-processing. The DOF is gated like the
              transmission pass — when the crystal is on screen the
@@ -2547,8 +2645,8 @@ export function startGallery(projects: Project[], opts?: GalleryOptions): Galler
   /* Build marker (round 13): lets a visual check confirm which build is
      actually loaded, so a stale-cache check can never again be mistaken
      for a failed fix. */
-  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r29';
+  if (typeof window !== 'undefined') window.__GALLERY_BUILD = 'r30';
   var sceneEl = document.getElementById('scene');
-  if (sceneEl) sceneEl.dataset.build = 'r29';
+  if (sceneEl) sceneEl.dataset.build = 'r30';
   return gl;
 }
